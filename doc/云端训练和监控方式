@@ -1,0 +1,18 @@
+云端训练脚本：start_cloud_gpu_training_final.py
+云服务器监控脚本：real_time_training_monitor.py
+公网 IP 152.136.245.138
+root密码:Vonzeus01
+GPU基础型 - T4-16GB | 8+TFlops SP
+CPU - 8 核 | 内存 - 32GiB
+系统Ubuntu20.04
+训练轮数300
+批次大小20
+学习率 ：建议0.01
+图片尺寸 ：1024
+基础模型 ：yolov8m.pt
+云端数据集存放路径 ：/root/yolo_dataset/
+- 数据加载线程数 ：20个
+- 是否启用混合精度训练 ：加速训练
+- 多久保存一次模型 ：建议每10个epoch
+- 早停耐心值 ：建议50 (50个epoch不改善就停止)
+我标定的物体关键词是：卡丁 支架 双飞卡钉

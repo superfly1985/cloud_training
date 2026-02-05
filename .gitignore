@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# PyInstaller build artifacts
+build/
+dist/
+release/
+
+# Local environment packages cache
+Environment_package/
+Environment_package_python39/
+packages/
+
+# Test artifacts
+test/
+
+# IDE/workspace
+.vscode/
+.trae/
+

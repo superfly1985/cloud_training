@@ -1,0 +1,16 @@
+{
+  "session_id": "20250925_221130",
+  "created_at": "2025-09-25T22:11:30.842934",
+  "last_updated": "2025-09-25T22:14:40.567165",
+  "steps": {
+    "gpu_check": true,
+    "server_time_check": true,
+    "cloud_cleanup": true,
+    "environment_setup": true,
+    "dataset_upload": true,
+    "script_creation": true,
+    "training_start": false
+  },
+  "current_step": "script_creation",
+  "total_steps": 7
+}

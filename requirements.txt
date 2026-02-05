@@ -1,0 +1,10 @@
+ultralytics>=8.2.0
+# 默认安装 CPU 版 Torch；如需 CUDA，请替换为与你的 CUDA 版本匹配的轮子
+# 例如：pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+torch>=2.1.0
+torchvision>=0.16.0
+opencv-python>=4.8.0
+numpy
+matplotlib
+PyYAML
+onnx>=1.14.0

@@ -1,0 +1,92 @@
+{
+  "/root/yolo_dataset_4classes/test/labels/image_2199.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2199.txt",
+    "hash": "84c0f291f9a8193dfbdffcca9ebd4e27",
+    "upload_time": "2025-09-25T22:14:37.479781",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2301.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2301.txt",
+    "hash": "848070121ce214c7d90d174ece48c945",
+    "upload_time": "2025-09-25T22:14:37.768992",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2327.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2327.txt",
+    "hash": "4a08590ebf6effb62eec4b4218d4913d",
+    "upload_time": "2025-09-25T22:14:37.800897",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2304.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2304.txt",
+    "hash": "05196a97074ca7d87c70c81404c0c619",
+    "upload_time": "2025-09-25T22:14:37.806733",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2380.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2380.txt",
+    "hash": "880606d84d18d2fa5b0745e813866ab9",
+    "upload_time": "2025-09-25T22:14:38.003791",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2373.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2373.txt",
+    "hash": "7b5bee790245c7000783182cc129b77d",
+    "upload_time": "2025-09-25T22:14:38.070132",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2392.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2392.txt",
+    "hash": "425d26b69013b48eafaf9c2db71d638e",
+    "upload_time": "2025-09-25T22:14:38.138771",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2184.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2184.txt",
+    "hash": "026b09b76cb66db2e308ae1b227c1ccd",
+    "upload_time": "2025-09-25T22:14:38.140157",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2347.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2347.txt",
+    "hash": "795be4064ee71aabfcd0bad2e55dc51a",
+    "upload_time": "2025-09-25T22:14:38.146965",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2397.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2397.txt",
+    "hash": "1dfacb2e44a040f3db785c9fe5cb5448",
+    "upload_time": "2025-09-25T22:14:38.302194",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2227.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2227.txt",
+    "hash": "f230c17dd40ff8ad90edc12a2cdf8189",
+    "upload_time": "2025-09-25T22:14:38.338401",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2418.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2418.txt",
+    "hash": "b10b4b4a5b3ef7244b18c6e38a25263a",
+    "upload_time": "2025-09-25T22:14:38.356359",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2411.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2411.txt",
+    "hash": "050ec4ba9594f23f790e2d8bc020c30e",
+    "upload_time": "2025-09-25T22:14:38.385855",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2414.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2414.txt",
+    "hash": "eab7a6f4ed86f354a6126727ee69b105",
+    "upload_time": "2025-09-25T22:14:39.435189",
+    "status": "completed"
+  },
+  "/root/yolo_dataset_4classes/test/labels/image_2261.txt": {
+    "local_file": "D:\\OneDrive\\24.Visual AI\\data\\yolo_dataset_4classes\\test/labels\\image_2261.txt",
+    "hash": "0a8dd805cc840368aff99ef831e3f5e5",
+    "upload_time": "2025-09-25T22:14:39.564815",
+    "status": "completed"
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "timestamp": "20250928_083008",
+  "directory_structure": {
+    "/root/yolo_dataset": {
+      "exists": true,
+      "content": "total 6140\ndrwxr-xr-x 8 root root   4096 Sep 28 08:27 .\ndrwx------ 1 root root   4096 Sep 28 08:28 ..\n-rw-r--r-- 1 root root     40 Sep 28 08:27 classes.txt\n-rw-r--r-- 1 root root    148 Sep 28 08:27 dataset.yaml\n-rw-r--r-- 1 root root    186 Sep 28 08:27 dataset.yaml.backup_20250928_082728\n-rw-r--r-- 1 root root    401 Sep 28 08:27 export_stats.txt\n-rw-r--r-- 1 root root 346015 Sep 28 08:27 test\\images\\test_000000.jpg\n-rw-r--r-- 1 root root 296499 Sep 28 08:27 test\\images\\test_000001.jpg\n-rw-r--r-- 1 root root 349328 Sep 28 08:27 test\\images\\test_000002.jpg\n-rw-r--r-- 1 root root    195 Sep 28 08:27 test\\labels\\test_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 test\\labels\\test_000001.txt\n-rw-r--r-- 1 root root    273 Sep 28 08:27 test\\labels\\test_000002.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 testimages\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 testlabels\n-rw-r--r-- 1 root root 265023 Sep 28 08:27 train\\images\\train_000000.jpg\n-rw-r--r-- 1 root root 263335 Sep 28 08:27 train\\images\\train_000001.jpg\n-rw-r--r-- 1 root root 255654 Sep 28 08:27 train\\images\\train_000002.jpg\n-rw-r--r-- 1 root root 278028 Sep 28 08:27 train\\images\\train_000003.jpg\n-rw-r--r-- 1 root root 306002 Sep 28 08:27 train\\images\\train_000004.jpg\n-rw-r--r-- 1 root root 250343 Sep 28 08:27 train\\images\\train_000005.jpg\n-rw-r--r-- 1 root root 236246 Sep 28 08:27 train\\images\\train_000006.jpg\n-rw-r--r-- 1 root root 250657 Sep 28 08:27 train\\images\\train_000007.jpg\n-rw-r--r-- 1 root root 281230 Sep 28 08:27 train\\images\\train_000008.jpg\n-rw-r--r-- 1 root root 254494 Sep 28 08:27 train\\images\\train_000009.jpg\n-rw-r--r-- 1 root root 299532 Sep 28 08:27 train\\images\\train_000010.jpg\n-rw-r--r-- 1 root root 244828 Sep 28 08:27 train\\images\\train_000011.jpg\n-rw-r--r-- 1 root root 242919 Sep 28 08:27 train\\images\\train_000012.jpg\n-rw-r--r-- 1 root root 263349 Sep 28 08:27 train\\images\\train_000013.jpg\n-rw-r--r-- 1 root root 258603 Sep 28 08:27 train\\images\\train_000014.jpg\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000001.txt\n-rw-r--r-- 1 root root    234 Sep 28 08:27 train\\labels\\train_000002.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000003.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000004.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000005.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000006.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000007.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000008.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:27 train\\labels\\train_000009.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 train\\labels\\train_000010.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 train\\labels\\train_000011.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 train\\labels\\train_000012.txt\n-rw-r--r-- 1 root root    234 Sep 28 08:28 train\\labels\\train_000013.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 train\\labels\\train_000014.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 trainimages\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 trainlabels\n-rw-r--r-- 1 root root 286052 Sep 28 08:28 val\\images\\val_000000.jpg\n-rw-r--r-- 1 root root 243226 Sep 28 08:28 val\\images\\val_000001.jpg\n-rw-r--r-- 1 root root 317299 Sep 28 08:28 val\\images\\val_000002.jpg\n-rw-r--r-- 1 root root 304710 Sep 28 08:28 val\\images\\val_000003.jpg\n-rw-r--r-- 1 root root    195 Sep 28 08:28 val\\labels\\val_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 val\\labels\\val_000001.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 val\\labels\\val_000002.txt\n-rw-r--r-- 1 root root    195 Sep 28 08:28 val\\labels\\val_000003.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 valimages\ndrwxr-xr-x 2 root root   4096 Sep 28 08:13 vallabels",
+      "file_count": 56
+    },
+    "/root/datasets": {
+      "exists": false,
+      "error": "ls: cannot access '/root/datasets': No such file or directory"
+    },
+    "/root/yolo_dataset/train": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/train': No such file or directory"
+    },
+    "/root/yolo_dataset/val": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/val': No such file or directory"
+    },
+    "/root/yolo_dataset/test": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/test': No such file or directory"
+    },
+    "/root/yolo_dataset/train/images": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/train/images': No such file or directory"
+    },
+    "/root/yolo_dataset/train/labels": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/train/labels': No such file or directory"
+    },
+    "/root/yolo_dataset/val/images": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/val/images': No such file or directory"
+    },
+    "/root/yolo_dataset/val/labels": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/val/labels': No such file or directory"
+    },
+    "/root/yolo_dataset/test/images": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/test/images': No such file or directory"
+    },
+    "/root/yolo_dataset/test/labels": {
+      "exists": false,
+      "error": "ls: cannot access '/root/yolo_dataset/test/labels': No such file or directory"
+    }
+  },
+  "yaml_files": {
+    "/root/yolo_dataset/dataset.yaml": {
+      "exists": true,
+      "content": "names:\r\n- 卡车\r\n- 飞机\r\n- 轮船\r\n- 房屋\r\n- 公路\r\nnc: 5\r\npath: /root/yolo_dataset\r\ntest: test/images\r\ntrain: train/images\r\nval: val/images\r\n"
+    },
+    "/root/dataset.yaml": {
+      "exists": false,
+      "error": "cat: /root/dataset.yaml: No such file or directory"
+    },
+    "/root/datasets/dataset.yaml": {
+      "exists": false,
+      "error": "cat: /root/datasets/dataset.yaml: No such file or directory"
+    }
+  },
+  "search_results": {
+    "search_1": {
+      "command": "find /root -name '*.jpg' -o -name '*.png' -o -name '*.jpeg' | head -20",
+      "output": "/root/yolo_dataset_4classes/test/images/image_2151.jpg\n/root/yolo_dataset_4classes/test/images/image_2406.jpg\n/root/yolo_dataset_4classes/test/images/image_2397.jpg\n/root/yolo_dataset_4classes/test/images/image_2261.jpg\n/root/yolo_dataset_4classes/test/images/image_1683.jpg\n/root/yolo_dataset_4classes/test/images/image_1920.jpg\n/root/yolo_dataset_4classes/test/images/image_1932.jpg\n/root/yolo_dataset_4classes/test/images/image_1314.jpg\n/root/yolo_dataset_4classes/test/images/image_1811.jpg\n/root/yolo_dataset_4classes/test/images/image_1686.jpg\n/root/yolo_dataset_4classes/test/images/image_1434.jpg\n/root/yolo_dataset_4classes/test/images/image_1383.jpg\n/root/yolo_dataset_4classes/test/images/image_2119.jpg\n/root/yolo_dataset_4classes/test/images/image_2011.jpg\n/root/yolo_dataset_4classes/test/images/image_1754.jpg\n/root/yolo_dataset_4classes/test/images/image_2187.jpg\n/root/yolo_dataset_4classes/test/images/image_2411.jpg\n/root/yolo_dataset_4classes/test/images/image_2247.jpg\n/root/yolo_dataset_4classes/test/images/image_2080.jpg\n/root/yolo_dataset_4classes/test/images/image_1496.jpg",
+      "files_found": 20
+    },
+    "search_2": {
+      "command": "find /root -name '*.txt' -path '*/labels/*' | head -10",
+      "output": "/root/yolo_dataset_4classes/test/labels/image_2226.txt\n/root/yolo_dataset_4classes/test/labels/image_1754.txt\n/root/yolo_dataset_4classes/test/labels/image_2027.txt\n/root/yolo_dataset_4classes/test/labels/image_2411.txt\n/root/yolo_dataset_4classes/test/labels/image_1891.txt\n/root/yolo_dataset_4classes/test/labels/image_1656.txt\n/root/yolo_dataset_4classes/test/labels/image_1758.txt\n/root/yolo_dataset_4classes/test/labels/image_2214.txt\n/root/yolo_dataset_4classes/test/labels/image_2080.txt\n/root/yolo_dataset_4classes/test/labels/image_2418.txt",
+      "files_found": 10
+    },
+    "search_3": {
+      "command": "find /root -type d -name 'images' | head -10",
+      "output": "/root/yolo_dataset_4classes/test/images\n/root/yolo_dataset_4classes/train/images\n/root/yolo_dataset_4classes/val/images\n/root/miniforge3/pkgs/tk-8.6.13-noxft_h4845f30_101/lib/tk8.6/images\n/root/miniforge3/pkgs/tk-8.6.13-noxft_h4845f30_101/lib/tk8.6/demos/images\n/root/miniforge3/lib/tk8.6/images\n/root/miniforge3/lib/tk8.6/demos/images\n/root/pin_detection/images",
+      "files_found": 8
+    },
+    "search_4": {
+      "command": "find /root -type d -name 'labels' | head -10",
+      "output": "/root/yolo_dataset_4classes/test/labels\n/root/yolo_dataset_4classes/train/labels\n/root/yolo_dataset_4classes/val/labels\n/root/pin_detection/labels",
+      "files_found": 4
+    },
+    "search_5": {
+      "command": "find /root -name 'dataset.yaml' | head -5",
+      "output": "/root/yolo_dataset_4classes/dataset.yaml\n/root/yolo_dataset/dataset.yaml",
+      "files_found": 2
+    }
+  },
+  "summary": {
+    "total_directories_checked": 11,
+    "existing_directories": 1,
+    "yaml_files_found": 1,
+    "recommendations": [
+      "需要创建 /root/yolo_dataset/val/images 目录"
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "timestamp": "2025-09-28 16:35:35",
+  "server": "152.136.245.138",
+  "verification_results": {
+    "ls -la /root/yolo_dataset/": {
+      "output": "total 6148\ndrwxr-xr-x 8 root root   4096 Sep 28 02:47 .\ndrwx------ 1 root root   4096 Sep 28 08:32 ..\n-rw-r--r-- 1 root root     40 Sep 28 03:03 classes.txt\n-rw-r--r-- 1 root root    148 Sep 28 03:03 dataset.yaml\n-rw-r--r-- 1 root root    186 Sep 28 03:03 dataset.yaml.backup_20250928_082728\n-rw-r--r-- 1 root root    148 Sep 28 03:03 dataset.yaml.backup_20250928_083730\n-rw-r--r-- 1 root root    148 Sep 28 03:03 dataset.yaml.backup_20250928_083743\n-rw-r--r-- 1 root root    401 Sep 28 03:03 export_stats.txt\n-rw-r--r-- 1 root root 346015 Sep 28 03:03 test\\images\\test_000000.jpg\n-rw-r--r-- 1 root root 296499 Sep 28 03:03 test\\images\\test_000001.jpg\n-rw-r--r-- 1 root root 349328 Sep 28 03:03 test\\images\\test_000002.jpg\n-rw-r--r-- 1 root root    195 Sep 28 03:03 test\\labels\\test_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 test\\labels\\test_000001.txt\n-rw-r--r-- 1 root root    273 Sep 28 03:03 test\\labels\\test_000002.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 testimages\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 testlabels\n-rw-r--r-- 1 root root 265023 Sep 28 03:03 train\\images\\train_000000.jpg\n-rw-r--r-- 1 root root 263335 Sep 28 03:03 train\\images\\train_000001.jpg\n-rw-r--r-- 1 root root 255654 Sep 28 03:03 train\\images\\train_000002.jpg\n-rw-r--r-- 1 root root 278028 Sep 28 03:03 train\\images\\train_000003.jpg\n-rw-r--r-- 1 root root 306002 Sep 28 03:03 train\\images\\train_000004.jpg\n-rw-r--r-- 1 root root 250343 Sep 28 03:03 train\\images\\train_000005.jpg\n-rw-r--r-- 1 root root 236246 Sep 28 03:03 train\\images\\train_000006.jpg\n-rw-r--r-- 1 root root 250657 Sep 28 03:03 train\\images\\train_000007.jpg\n-rw-r--r-- 1 root root 281230 Sep 28 03:03 train\\images\\train_000008.jpg\n-rw-r--r-- 1 root root 254494 Sep 28 03:03 train\\images\\train_000009.jpg\n-rw-r--r-- 1 root root 299532 Sep 28 03:03 train\\images\\train_000010.jpg\n-rw-r--r-- 1 root root 244828 Sep 28 03:03 train\\images\\train_000011.jpg\n-rw-r--r-- 1 root root 242919 Sep 28 03:03 train\\images\\train_000012.jpg\n-rw-r--r-- 1 root root 263349 Sep 28 03:03 train\\images\\train_000013.jpg\n-rw-r--r-- 1 root root 258603 Sep 28 03:03 train\\images\\train_000014.jpg\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000001.txt\n-rw-r--r-- 1 root root    234 Sep 28 03:03 train\\labels\\train_000002.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000003.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000004.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000005.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000006.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000007.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000008.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000009.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000010.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000011.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000012.txt\n-rw-r--r-- 1 root root    234 Sep 28 03:03 train\\labels\\train_000013.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 train\\labels\\train_000014.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 trainimages\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 trainlabels\n-rw-r--r-- 1 root root 286052 Sep 28 03:03 val\\images\\val_000000.jpg\n-rw-r--r-- 1 root root 243226 Sep 28 03:03 val\\images\\val_000001.jpg\n-rw-r--r-- 1 root root 317299 Sep 28 03:03 val\\images\\val_000002.jpg\n-rw-r--r-- 1 root root 304710 Sep 28 03:03 val\\images\\val_000003.jpg\n-rw-r--r-- 1 root root    195 Sep 28 03:03 val\\labels\\val_000000.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 val\\labels\\val_000001.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 val\\labels\\val_000002.txt\n-rw-r--r-- 1 root root    195 Sep 28 03:03 val\\labels\\val_000003.txt\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 valimages\ndrwxr-xr-x 2 root root   4096 Sep 28 02:47 vallabels"
+    },
+    "find /root/yolo_dataset/images -name '*.jpg' | wc -l": {
+      "error": "find: '/root/yolo_dataset/images': No such file or directory"
+    },
+    "find /root/yolo_dataset/labels -name '*.txt' | wc -l": {
+      "error": "find: '/root/yolo_dataset/labels': No such file or directory"
+    },
+    "ls -la /root/yolo_dataset/dataset.yaml": {
+      "output": "-rw-r--r-- 1 root root 148 Sep 28 03:03 /root/yolo_dataset/dataset.yaml"
+    },
+    "cat /root/yolo_dataset/dataset.yaml": {
+      "output": "names:\r\n- 卡车\r\n- 飞机\r\n- 轮船\r\n- 房屋\r\n- 公路\r\nnc: 5\r\npath: /root/yolo_dataset\r\ntest: test/images\r\ntrain: train/images\r\nval: val/images"
+    },
+    "find /root/yolo_dataset/images/train -name '*.jpg' | wc -l": {
+      "error": "find: '/root/yolo_dataset/images/train': No such file or directory"
+    },
+    "find /root/yolo_dataset/images/val -name '*.jpg' | wc -l": {
+      "error": "find: '/root/yolo_dataset/images/val': No such file or directory"
+    },
+    "find /root/yolo_dataset/labels/train -name '*.txt' | wc -l": {
+      "error": "find: '/root/yolo_dataset/labels/train': No such file or directory"
+    },
+    "find /root/yolo_dataset/labels/val -name '*.txt' | wc -l": {
+      "error": "find: '/root/yolo_dataset/labels/val': No such file or directory"
+    }
+  }
+}

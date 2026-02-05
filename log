@@ -1,0 +1,187 @@
+[13:26:50] 数据集分析完成: yolo_dataset
+[13:26:51] 服务器连接测试成功
+[13:26:56] 🔄 开始预下载YOLO模型...
+[13:26:57] ✓ 模型 yolov8s.pt 已存在，跳过下载
+[13:26:59] 检查训练脚本...
+[13:26:59] 系统监控已启动
+[13:26:59] 开始监控训练状态
+[13:27:01] ✓ 训练脚本上传成功
+[13:27:01] 脚本信息: -rw-r--r-- 1 root root 5979 Jan 17 05:26 /root/training_script.py
+[13:27:01] 检查Python环境...
+[13:27:02] ✓ 找到Python命令: python3
+[13:27:02] Python版本: /usr/bin/python3
+Python 3.9.5
+[13:27:02] 检查必要的Python包...
+[13:27:02] 检查必要的Python包...
+[13:27:02] 🔍 检查Python环境和已安装包...
+[13:27:02] GPU状态: 0, 2, 16384
+[13:27:03] Python环境: Python 3.9.5
+pip 25.3 from /usr/local/lib/python3.9/dist-packages/pip (python 3.9)
+[13:27:03] 检查系统预装包...
+[13:27:04] SSH状态: 已连接 | 监控数据 - GPU利用率: 0%, GPU显存: 0.01220703125%, CPU: 1.91203%, 内存: 2.1%
+[13:27:04]   ✅ NumPy: 2.0.2
+[13:27:06]   ✅ Pillow: 11.3.0
+[13:27:07]   ✅ PyYAML: OK
+[13:27:07] 检查深度学习包...
+[13:27:09]   ✅ PyTorch: 2.2.0+cu121
+[13:27:12] ✓ 已安装的包:
+[13:27:12]   - NumPy: 2.0.2
+[13:27:12]   - Pillow: 11.3.0
+[13:27:12]   - PyYAML: OK
+[13:27:12]   - PyTorch: 2.2.0+cu121
+[13:27:12] ✅ 所有深度学习包都已安装
+[13:27:12] 诊断Python环境...
+[13:27:15] ⚠ 检测到NumPy 2.0.2 可能与Torch/CV2不兼容，执行兼容修复...
+[13:27:17] SSH状态: 已连接 | 监控数据 - GPU利用率: 0%, GPU显存: 0.01220703125%, CPU: 1.9342%, 内存: 2.1%
+[13:27:28] SSH状态: 已连接 | 监控数据 - GPU利用率: 0%, GPU显存: 0.01220703125%, CPU: 1.94697%, 内存: 2.2%
+[13:27:33] GPU状态: 0, 2, 16384
+[13:27:33] ✓ 兼容修复完成: 
+[13:27:34] Python路径: /usr/bin/python3
+[13:27:34] Pip信息: pip 25.3 from /usr/local/lib/python3.9/dist-packages/pip (python 3.9)
+[13:27:34] 工作的pip命令: python3 -m pip
+[13:27:34] Python模块搜索路径: ['', '/usr/lib/python39.zip', '/usr/lib/python3.9', '/usr/lib/python3.9/lib-dynload', '/root/.local/lib/python3.9/site-packages', '/usr/local/lib/python3.9/dist-packages', '/usr/lib/python3/dist-packages']
+[13:27:34] 重新检查包安装情况...
+[13:27:39] ✓ 最终已安装的包:
+[13:27:39]   - PyTorch: 2.2.0+cu121
+[13:27:39] ✓ 包检查成功: PyTorch: 2.2.0+cu121
+[13:27:39] 刷新Python模块缓存...
+[13:27:40] 缓存刷新结果: 缓存已刷新
+[13:27:40] 开始执行训练脚本...
+[13:27:40] 使用Python命令: python3
+[13:27:40] 日志文件: /root/training_log_20260117_132739.txt
+[13:27:43] PyTorch CUDA状态: available=None compiled=None ver=None
+[13:27:43] ✓ 检测到CUDA版PyTorch，无需重复安装
+[13:27:44] SSH状态: 已连接 | 监控数据 - GPU利用率: 0%, GPU显存: 0.01220703125%, CPU: 1.9767%, 内存: 2.1%
+[13:27:46] 已禁用系统site-packages，优先使用pip安装的包
+[13:27:47] 训练目录: /root/runs/train/yolo_training_20260117_132739
+[13:27:50] ⚠ 未检测到训练进程，可能已经完成或失败
+[13:27:50] 开始监控训练日志...
+[13:27:51] [训练] A module that was compiled using NumPy 1.x cannot be run in
+[13:27:51] [训练] NumPy 2.0.2 as it may crash. To support both 1.x and 2.x
+[13:27:51] [训练] versions of NumPy, modules must be compiled with NumPy 2.0.
+[13:27:51] [训练] Some module may need to rebuild instead e.g. with 'pybind11>=2.12'.
+[13:27:51] [训练] If you are a user of the module, the easiest solution will be to
+[13:27:51] [训练] downgrade to 'numpy<2' or try to upgrade the affected module.
+[13:27:51] [训练] We expect that some modules will need time to support NumPy 2.
+[13:27:51] [训练] Traceback (most recent call last):  File "/root/training_script.py", line 13, in <module>
+[13:27:51] [训练] import torch
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/torch/__init__.py", line 1471, in <module>
+[13:27:51] [训练] from .functional import *  # noqa: F403
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/torch/functional.py", line 9, in <module>
+[13:27:51] [训练] import torch.nn.functional as F
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/torch/nn/__init__.py", line 1, in <module>
+[13:27:51] [训练] from .modules import *  # noqa: F403
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/torch/nn/modules/__init__.py", line 35, in <module>
+[13:27:51] [训练] from .transformer import TransformerEncoder, TransformerDecoder, \
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/torch/nn/modules/transformer.py", line 20, in <module>
+[13:27:51] [训练] device: torch.device = torch.device(torch._C._get_default_device()),  # torch.device('cpu'),
+[13:27:51] [训练] /usr/local/lib/python3.9/dist-packages/torch/nn/modules/transformer.py:20: UserWarning: Failed to initialize NumPy: _ARRAY_API not found (Triggered internally at ../torch/csrc/utils/tensor_numpy.cpp:84.)
+[13:27:51] [训练] device: torch.device = torch.device(torch._C._get_default_device()),  # torch.device('cpu'),
+[13:27:51] [训练] A module that was compiled using NumPy 1.x cannot be run in
+[13:27:51] [训练] NumPy 2.0.2 as it may crash. To support both 1.x and 2.x
+[13:27:51] [训练] versions of NumPy, modules must be compiled with NumPy 2.0.
+[13:27:51] [训练] Some module may need to rebuild instead e.g. with 'pybind11>=2.12'.
+[13:27:51] [训练] If you are a user of the module, the easiest solution will be to
+[13:27:51] [训练] downgrade to 'numpy<2' or try to upgrade the affected module.
+[13:27:51] [训练] We expect that some modules will need time to support NumPy 2.
+[13:27:51] [训练] Traceback (most recent call last):  File "/root/training_script.py", line 15, in <module>
+[13:27:51] [训练] from ultralytics import YOLO
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/__init__.py", line 5, in <module>
+[13:27:51] [训练] from ultralytics.models import RTDETR, SAM, YOLO
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/__init__.py", line 3, in <module>
+[13:27:51] [训练] from .rtdetr import RTDETR
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/__init__.py", line 3, in <module>
+[13:27:51] [训练] from .model import RTDETR
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/model.py", line 3, in <module>
+[13:27:51] [训练] from ultralytics.engine.model import Model
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/engine/model.py", line 8, in <module>
+[13:27:51] [训练] from ultralytics.cfg import TASK2DATA, get_cfg, get_save_dir
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/cfg/__init__.py", line 10, in <module>
+[13:27:51] [训练] from ultralytics.utils import (ASSETS, DEFAULT_CFG, DEFAULT_CFG_DICT, DEFAULT_CFG_PATH, LOGGER, RANK, ROOT, SETTINGS,
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/utils/__init__.py", line 18, in <module>
+[13:27:51] [训练] import cv2
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 181, in <module>
+[13:27:51] [训练] bootstrap()
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 153, in bootstrap
+[13:27:51] [训练] native_module = importlib.import_module("cv2")
+[13:27:51] [训练] File "/usr/lib/python3.9/importlib/__init__.py", line 127, in import_module
+[13:27:51] [训练] return _bootstrap._gcd_import(name[level:], package, level)
+[13:27:51] [训练] AttributeError: _ARRAY_API not found
+[13:27:51] [训练] Traceback (most recent call last):
+[13:27:51] [训练] File "/root/training_script.py", line 15, in <module>
+[13:27:51] [训练] from ultralytics import YOLO
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/__init__.py", line 5, in <module>
+[13:27:51] [训练] from ultralytics.models import RTDETR, SAM, YOLO
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/__init__.py", line 3, in <module>
+[13:27:51] [训练] from .rtdetr import RTDETR
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/__init__.py", line 3, in <module>
+[13:27:51] [训练] from .model import RTDETR
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/model.py", line 3, in <module>
+[13:27:51] [训练] from ultralytics.engine.model import Model
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/engine/model.py", line 8, in <module>
+[13:27:51] [训练] from ultralytics.cfg import TASK2DATA, get_cfg, get_save_dir
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/cfg/__init__.py", line 10, in <module>
+[13:27:51] [训练] from ultralytics.utils import (ASSETS, DEFAULT_CFG, DEFAULT_CFG_DICT, DEFAULT_CFG_PATH, LOGGER, RANK, ROOT, SETTINGS,
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/ultralytics/utils/__init__.py", line 18, in <module>
+[13:27:51] [训练] import cv2
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 181, in <module>
+[13:27:51] [训练] bootstrap()
+[13:27:51] [训练] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 153, in bootstrap
+[13:27:51] [训练] native_module = importlib.import_module("cv2")
+[13:27:51] [训练] File "/usr/lib/python3.9/importlib/__init__.py", line 127, in import_module
+[13:27:51] [训练] return _bootstrap._gcd_import(name[level:], package, level)
+[13:27:51] [训练] ImportError: numpy.core.multiarray failed to import
+[13:27:52] 训练进程已结束
+[13:27:52] 获取最终训练结果...
+[13:27:53] === 最终训练日志 ===
+[13:27:53] [最终] downgrade to 'numpy<2' or try to upgrade the affected module.
+[13:27:53] [最终] We expect that some modules will need time to support NumPy 2.
+[13:27:53] [最终] Traceback (most recent call last):  File "/root/training_script.py", line 15, in <module>
+[13:27:53] [最终] from ultralytics import YOLO
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/__init__.py", line 5, in <module>
+[13:27:53] [最终] from ultralytics.models import RTDETR, SAM, YOLO
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/__init__.py", line 3, in <module>
+[13:27:53] [最终] from .rtdetr import RTDETR
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/__init__.py", line 3, in <module>
+[13:27:53] [最终] from .model import RTDETR
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/model.py", line 3, in <module>
+[13:27:53] [最终] from ultralytics.engine.model import Model
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/engine/model.py", line 8, in <module>
+[13:27:53] [最终] from ultralytics.cfg import TASK2DATA, get_cfg, get_save_dir
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/cfg/__init__.py", line 10, in <module>
+[13:27:53] [最终] from ultralytics.utils import (ASSETS, DEFAULT_CFG, DEFAULT_CFG_DICT, DEFAULT_CFG_PATH, LOGGER, RANK, ROOT, SETTINGS,
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/utils/__init__.py", line 18, in <module>
+[13:27:53] [最终] import cv2
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 181, in <module>
+[13:27:53] [最终] bootstrap()
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 153, in bootstrap
+[13:27:53] [最终] native_module = importlib.import_module("cv2")
+[13:27:53] [最终] File "/usr/lib/python3.9/importlib/__init__.py", line 127, in import_module
+[13:27:53] [最终] return _bootstrap._gcd_import(name[level:], package, level)
+[13:27:53] [最终] AttributeError: _ARRAY_API not found
+[13:27:53] [最终] Traceback (most recent call last):
+[13:27:53] [最终] File "/root/training_script.py", line 15, in <module>
+[13:27:53] [最终] from ultralytics import YOLO
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/__init__.py", line 5, in <module>
+[13:27:53] [最终] from ultralytics.models import RTDETR, SAM, YOLO
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/__init__.py", line 3, in <module>
+[13:27:53] [最终] from .rtdetr import RTDETR
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/__init__.py", line 3, in <module>
+[13:27:53] [最终] from .model import RTDETR
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/models/rtdetr/model.py", line 3, in <module>
+[13:27:53] [最终] from ultralytics.engine.model import Model
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/engine/model.py", line 8, in <module>
+[13:27:53] [最终] from ultralytics.cfg import TASK2DATA, get_cfg, get_save_dir
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/cfg/__init__.py", line 10, in <module>
+[13:27:53] [最终] from ultralytics.utils import (ASSETS, DEFAULT_CFG, DEFAULT_CFG_DICT, DEFAULT_CFG_PATH, LOGGER, RANK, ROOT, SETTINGS,
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/ultralytics/utils/__init__.py", line 18, in <module>
+[13:27:53] [最终] import cv2
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 181, in <module>
+[13:27:53] [最终] bootstrap()
+[13:27:53] [最终] File "/usr/local/lib/python3.9/dist-packages/cv2/__init__.py", line 153, in bootstrap
+[13:27:53] [最终] native_module = importlib.import_module("cv2")
+[13:27:53] [最终] File "/usr/lib/python3.9/importlib/__init__.py", line 127, in import_module
+[13:27:53] [最终] return _bootstrap._gcd_import(name[level:], package, level)
+[13:27:53] [最终] ImportError: numpy.core.multiarray failed to import
+[13:27:54] ✓ 系统包目录已恢复
+
