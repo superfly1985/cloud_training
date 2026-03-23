@@ -5,8 +5,10 @@
 包含服务器配置、数据集配置、训练监控等核心功能模块
 """
 
+import ttkbootstrap as ttk
+from ttkbootstrap.constants import *
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox, scrolledtext
 import json
 import os
 import sys
@@ -28,10 +30,14 @@ import matplotlib.animation as animation
 from collections import deque
 import numpy as np
 
+# 设置 matplotlib 支持中文
+plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
+plt.rcParams['axes.unicode_minus'] = False
+
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.0"
+        self.app_version = "v2.2.1"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -145,24 +151,22 @@ class CloudTrainingGUI:
         # 配置网格权重
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(3, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(0, weight=1)
         
-        # 创建选项卡
+        self.style = ttk.Style()
+        # ttkbootstrap 原生支持 bootstyle="success" 等，不再需要自定义 TButton 样式
+
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
-        
-        # 服务器配置选项卡
-        self.setup_server_tab()
-        
-        # 数据集配置选项卡
+
+        # !关键修复: 强制让 notebook 撑满所在网格的垂直空间
+        main_frame.rowconfigure(0, weight=1)
+
         self.setup_dataset_tab()
         
-        # 训练监控选项卡
-        self.setup_training_tab()
-        
-        # 状态栏
-        self.setup_status_bar(main_frame)
+        # 状态栏 (由于已有日志输出，不再显示)
+        # self.setup_status_bar(main_frame)
     
     def setup_server_tab(self):
         """设置服务器配置选项卡"""
@@ -170,7 +174,7 @@ class CloudTrainingGUI:
         self.notebook.add(server_frame, text="服务器配置")
         
         # 服务器信息框架
-        server_info_frame = ttk.LabelFrame(server_frame, text="服务器连接信息", padding="10")
+        server_info_frame = ttk.Labelframe(server_frame, text="服务器连接信息", padding="10")
         server_info_frame.grid(row=0, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # IP地址
@@ -220,166 +224,276 @@ class CloudTrainingGUI:
     
     def setup_dataset_tab(self):
         """设置数据集配置选项卡"""
-        dataset_frame = ttk.Frame(self.notebook, padding="10")
-        self.notebook.add(dataset_frame, text="数据集配置")
+        # --- 创建滚动容器 ---
+        outer_frame = ttk.Frame(self.notebook)
+        # 确保outer_frame可以填满notebook
+        outer_frame.pack(fill="both", expand=True)
+        self.notebook.add(outer_frame, text="数据集配置")
         
-        # 配置主框架的网格权重
-        dataset_frame.columnconfigure(0, weight=2)  # 左侧数据集配置区域
-        dataset_frame.columnconfigure(1, weight=1)  # 右侧训练参数区域
-        dataset_frame.rowconfigure(3, weight=1)     # 让日志区域可以扩展
+        canvas = tk.Canvas(outer_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
         
-        # 左侧：数据集配置区域
-        left_frame = ttk.Frame(dataset_frame)
-        left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
-        left_frame.columnconfigure(0, weight=1)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
         
-        # 数据集路径框架
-        path_frame = ttk.LabelFrame(left_frame, text="数据集路径配置", padding="10")
-        path_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        dataset_frame = ttk.Frame(canvas, padding="10")
+        canvas_window = canvas.create_window((0, 0), window=dataset_frame, anchor="nw")
         
-        # 本地数据集路径
-        ttk.Label(path_frame, text="本地数据集:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        local_path_frame = ttk.Frame(path_frame)
-        local_path_frame.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        def configure_dataset_frame(event):
+            # 更新滚动区域为 frame 的实际大小
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        dataset_frame.bind("<Configure>", configure_dataset_frame)
         
-        self.local_path_var = tk.StringVar(value=self.dataset_config['local_path'])
-        ttk.Entry(local_path_frame, textvariable=self.local_path_var, width=40).grid(row=0, column=0, sticky=(tk.W, tk.E))
-        ttk.Button(local_path_frame, text="选择", command=self.select_dataset_path).grid(row=0, column=1, padx=(5, 0))
+        def configure_canvas(event):
+            # 获取 canvas 所在窗口的实际大小
+            canvas_width = event.width
+            # 始终让内部 frame 的宽度和 canvas 一致
+            canvas.itemconfig(canvas_window, width=canvas_width)
+                
+        canvas.bind("<Configure>", configure_canvas)
         
-        local_path_frame.columnconfigure(0, weight=1)
+        # 将 canvas 上的事件绑定到外层 frame 上
+        def _on_mousewheel(event):
+            if canvas.winfo_ismapped():
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        outer_frame.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # --- 两列+底部布局容器 ---
+        # 调整左右两列的权重比例，使左侧变窄，右侧变宽
+        dataset_frame.columnconfigure(0, weight=1)
+        dataset_frame.columnconfigure(1, weight=3)
         
-        # 远程数据集路径
-        ttk.Label(path_frame, text="远程路径:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.remote_path_var = tk.StringVar(value=self.dataset_config['remote_path'])
-        ttk.Entry(path_frame, textvariable=self.remote_path_var, width=40).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        left_col = ttk.Frame(dataset_frame)
+        left_col.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N), padx=(0, 5))
+        left_col.columnconfigure(0, weight=1)
         
-        path_frame.columnconfigure(1, weight=1)
-        
-        # 数据集信息框架
-        info_frame = ttk.LabelFrame(left_frame, text="数据集信息", padding="10")
-        info_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # 数据集名称
-        ttk.Label(info_frame, text="数据集名称:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.dataset_name_var = tk.StringVar(value=self.dataset_config['dataset_name'])
-        ttk.Entry(info_frame, textvariable=self.dataset_name_var, width=30).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 类别数量
-        ttk.Label(info_frame, text="类别数量:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.num_classes_var = tk.StringVar(value=str(self.dataset_config['num_classes']))
-        ttk.Entry(info_frame, textvariable=self.num_classes_var, width=30, state="readonly").grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        info_frame.columnconfigure(1, weight=1)
-        
-        # 类别列表
-        ttk.Label(info_frame, text="类别列表:").grid(row=2, column=0, sticky=(tk.W, tk.N), pady=2)
-        self.classes_text = scrolledtext.ScrolledText(info_frame, height=5, width=40)
-        self.classes_text.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # dataset.yaml配置框架
-        yaml_frame = ttk.LabelFrame(left_frame, text="Dataset.yaml配置", padding="10")
-        yaml_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # yaml配置显示
-        ttk.Label(yaml_frame, text="当前配置:").grid(row=0, column=0, sticky=(tk.W, tk.N), pady=2)
-        self.yaml_config_text = scrolledtext.ScrolledText(yaml_frame, height=6, width=50)
-        self.yaml_config_text.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 路径问题检测结果
-        ttk.Label(yaml_frame, text="路径检测:").grid(row=1, column=0, sticky=(tk.W, tk.N), pady=2)
-        self.path_issues_text = scrolledtext.ScrolledText(yaml_frame, height=4, width=50)
-        self.path_issues_text.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        yaml_frame.columnconfigure(1, weight=1)
-        
-        # 操作按钮框架
-        dataset_button_frame = ttk.Frame(left_frame)
-        dataset_button_frame.grid(row=3, column=0, pady=10)
-        
-        ttk.Button(dataset_button_frame, text="分析数据集", command=self.analyze_dataset).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(dataset_button_frame, text="检查并修正", command=self.check_and_fix_dataset, style="Accent.TButton").grid(row=0, column=1, padx=(0, 5))
-        ttk.Button(dataset_button_frame, text="上传数据集", command=self.upload_dataset).grid(row=0, column=2, padx=(0, 5))
-        ttk.Button(dataset_button_frame, text="生成训练脚本", command=self.generate_training_script).grid(row=1, column=0, padx=(0, 5), pady=(5, 0))
-        ttk.Button(dataset_button_frame, text="清理云端数据", command=self.clean_cloud_data).grid(row=1, column=1, padx=(0, 5), pady=(5, 0))
-        
-        # 右侧：训练参数配置区域
-        right_frame = ttk.Frame(dataset_frame)
-        right_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
-        right_frame.columnconfigure(0, weight=1)
-        
-        # 训练参数框架
-        params_frame = ttk.LabelFrame(right_frame, text="训练参数配置", padding="10")
-        params_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # 训练轮数
-        ttk.Label(params_frame, text="训练轮数:").grid(row=0, column=0, sticky=tk.W, pady=2)
-        self.epochs_var = tk.StringVar(value=str(self.training_config['epochs']))
-        ttk.Entry(params_frame, textvariable=self.epochs_var, width=20).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 批次大小
-        ttk.Label(params_frame, text="批次大小:").grid(row=1, column=0, sticky=tk.W, pady=2)
-        self.batch_size_var = tk.StringVar(value=str(self.training_config['batch_size']))
-        ttk.Entry(params_frame, textvariable=self.batch_size_var, width=20).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 学习率
-        ttk.Label(params_frame, text="学习率:").grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.learning_rate_var = tk.StringVar(value=str(self.training_config['learning_rate']))
-        ttk.Entry(params_frame, textvariable=self.learning_rate_var, width=20).grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 图像大小
-        ttk.Label(params_frame, text="图像大小:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        self.image_size_var = tk.StringVar(value=str(self.training_config['image_size']))
-        ttk.Entry(params_frame, textvariable=self.image_size_var, width=20).grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
-        # 基础模型
-        ttk.Label(params_frame, text="基础模型:").grid(row=4, column=0, sticky=tk.W, pady=2)
-        self.base_model_var = tk.StringVar(value=self.training_config['base_model'])
-        model_combo = ttk.Combobox(params_frame, textvariable=self.base_model_var, width=18)
-        # 实际可用的YOLO模型版本选项
-        model_combo['values'] = (
-            # YOLOv8系列
-            'yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt',
-            # YOLOv9系列
-            'yolov9c.pt', 'yolov9e.pt',
-            # YOLOv10系列
-            'yolov10n.pt', 'yolov10s.pt', 'yolov10m.pt', 'yolov10b.pt', 'yolov10l.pt', 'yolov10x.pt',
-            # YOLOv11系列
-            'yolov11n.pt', 'yolov11s.pt', 'yolov11m.pt', 'yolov11l.pt', 'yolov11x.pt'
-        )
-        model_combo.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
-        
+        right_col = ttk.Frame(dataset_frame)
+        right_col.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N), padx=(5, 0))
+        right_col.columnconfigure(0, weight=1)
+
+        bottom_area = ttk.Frame(dataset_frame)
+        bottom_area.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
+        bottom_area.columnconfigure(0, weight=1)
+        dataset_frame.rowconfigure(1, weight=1)
+
+        # ==================== 左侧列 (Left Column) ====================
+        # 1. 服务器连接信息 (纵向排列)
+        server_frame = ttk.Labelframe(left_col, text="服务器连接信息", padding="10")
+        server_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        server_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(server_frame, text="服务器IP:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.hostname_var = tk.StringVar(value=self.server_config['hostname'])
+        ttk.Entry(server_frame, textvariable=self.hostname_var).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2)
+
+        ttk.Label(server_frame, text="端口:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.port_var = tk.StringVar(value=str(self.server_config['port']))
+        ttk.Entry(server_frame, textvariable=self.port_var).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=2)
+
+        ttk.Label(server_frame, text="用户名:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.username_var = tk.StringVar(value=self.server_config['username'])
+        ttk.Entry(server_frame, textvariable=self.username_var).grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2)
+
+        ttk.Label(server_frame, text="密码:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.password_var = tk.StringVar(value=self.server_config['password'])
+        ttk.Entry(server_frame, textvariable=self.password_var, show="*").grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2)
+
+        ttk.Label(server_frame, text="密钥文件:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        key_frame = ttk.Frame(server_frame)
+        key_frame.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
+        key_frame.columnconfigure(0, weight=1)
+        self.key_file_var = tk.StringVar(value=self.server_config['key_file'])
+        ttk.Entry(key_frame, textvariable=self.key_file_var).grid(row=0, column=0, sticky=(tk.W, tk.E))
+        ttk.Button(key_frame, text="选择", command=self.select_key_file, width=6).grid(row=0, column=1, padx=(5, 0))
+
+        server_button_frame = ttk.Frame(server_frame)
+        server_button_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
+        server_button_frame.columnconfigure(0, weight=1)
+        server_button_frame.columnconfigure(1, weight=1)
+        server_button_frame.columnconfigure(2, weight=1)
+        ttk.Button(server_button_frame, text="测试连接", command=self.test_connection).grid(row=0, column=0, padx=2, sticky=(tk.W, tk.E))
+        ttk.Button(server_button_frame, text="保存配置", command=self.save_server_config).grid(row=0, column=1, padx=2, sticky=(tk.W, tk.E))
+        ttk.Button(server_button_frame, text="详细信息", command=self.get_server_info).grid(row=0, column=2, padx=2, sticky=(tk.W, tk.E))
+
+        self.connection_status_var = tk.StringVar(value="未连接")
+        self.connection_status_label = ttk.Label(server_frame, textvariable=self.connection_status_var, foreground="red", anchor="center")
+        self.connection_status_label.grid(row=6, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
+
+        # 2. 训练参数配置 (纵向排列)
+        params_frame = ttk.Labelframe(left_col, text="训练参数配置", padding="10")
+        params_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         params_frame.columnconfigure(1, weight=1)
         
-        # 训练控制框架
-        control_frame = ttk.LabelFrame(right_frame, text="训练控制", padding="10")
-        control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        ttk.Label(params_frame, text="训练轮数:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.epochs_var = tk.StringVar(value=str(self.training_config['epochs']))
+        ttk.Entry(params_frame, textvariable=self.epochs_var).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2)
         
-        ttk.Button(control_frame, text="下载模型", command=self.download_models).grid(row=0, column=0, pady=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="删除模型", command=self.delete_models).grid(row=1, column=0, pady=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="本地安装包", command=self.local_package_install, style="Accent.TButton").grid(row=2, column=0, pady=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="上传设置", command=self.open_upload_settings).grid(row=3, column=0, pady=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="开始训练", command=self.start_training).grid(row=4, column=0, pady=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="停止训练", command=self.stop_training).grid(row=5, column=0, pady=2, sticky=(tk.W, tk.E))
+        ttk.Label(params_frame, text="批次大小:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.batch_size_var = tk.StringVar(value=str(self.training_config['batch_size']))
+        ttk.Entry(params_frame, textvariable=self.batch_size_var).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=2)
         
+        ttk.Label(params_frame, text="学习率:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.learning_rate_var = tk.StringVar(value=str(self.training_config['learning_rate']))
+        ttk.Entry(params_frame, textvariable=self.learning_rate_var).grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2)
+        
+        ttk.Label(params_frame, text="图像大小:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.image_size_var = tk.StringVar(value=str(self.training_config['image_size']))
+        ttk.Entry(params_frame, textvariable=self.image_size_var).grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2)
+        
+        ttk.Label(params_frame, text="基础模型:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.base_model_var = tk.StringVar(value=self.training_config['base_model'])
+        model_combo = ttk.Combobox(params_frame, textvariable=self.base_model_var)
+        model_combo['values'] = (
+            'yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt',
+            'yolov9c.pt', 'yolov9e.pt',
+            'yolov10n.pt', 'yolov10s.pt', 'yolov10m.pt', 'yolov10b.pt', 'yolov10l.pt', 'yolov10x.pt',
+            'yolov11n.pt', 'yolov11s.pt', 'yolov11m.pt', 'yolov11l.pt', 'yolov11x.pt'
+        )
+        # 禁用 Combobox 的鼠标滚轮事件，防止误触改变选项
+        model_combo.bind('<MouseWheel>', lambda e: "break")
+        
+        model_combo.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
+
+        # 3. 训练控制 (纵向统一大小按钮)
+        control_frame = ttk.Labelframe(left_col, text="训练控制", padding="10")
+        # 让它在左侧填满剩余空间
+        control_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
+        left_col.rowconfigure(2, weight=1)
         control_frame.columnconfigure(0, weight=1)
+        
+        ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset).grid(row=0, column=0, pady=3, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="处理数据集", command=self.process_dataset).grid(row=1, column=0, pady=3, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="清理云端数据", command=self.clean_cloud_data, bootstyle="danger").grid(row=2, column=0, pady=3, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success").grid(row=3, column=0, pady=3, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="停止训练", command=self.stop_training, bootstyle="danger").grid(row=4, column=0, pady=3, sticky=(tk.W, tk.E))
 
-        # 训练状态显示
-        status_frame = ttk.LabelFrame(right_frame, text="训练状态", padding="10")
-        status_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        self.training_status_var = tk.StringVar(value="未开始")
-        status_label = ttk.Label(status_frame, textvariable=self.training_status_var, font=("Arial", 10, "bold"))
-        status_label.grid(row=0, column=0, pady=5)
+        # ==================== 右侧列 (Right Column) ====================
+        # 1. 训练状态显示
+        status_frame = ttk.Labelframe(right_col, text="训练状态", padding="10")
+        status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        for i in range(4):
+            status_frame.columnconfigure(i, weight=1)
+            
+        if not hasattr(self, "training_status_var"):
+            self.training_status_var = tk.StringVar(value="未开始")
+        status_label = ttk.Label(status_frame, textvariable=self.training_status_var, font=("Arial", 10, "bold"), foreground="#007bff")
+        status_label.grid(row=0, column=0, pady=2, sticky=tk.W)
+        
+        self.status_gpu_util_var = tk.StringVar(value="GPU: 0%")
+        ttk.Label(status_frame, textvariable=self.status_gpu_util_var).grid(row=0, column=1, pady=2, sticky=tk.W)
+        
+        self.status_gpu_memory_var = tk.StringVar(value="显存: 0%")
+        ttk.Label(status_frame, textvariable=self.status_gpu_memory_var).grid(row=0, column=2, pady=2, sticky=tk.W)
+        
+        # 将原有的 Epoch: 0/0 改为显示训练持续时长
+        self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
+        ttk.Label(status_frame, textvariable=self.status_duration_var).grid(row=0, column=3, pady=2, sticky=tk.W)
+        
+        # 保留 self.current_epoch_var 引用以防其他地方报错，但不再显示
+        self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
+        
+        ttk.Button(status_frame, text="下载模型", command=self.download_models).grid(row=1, column=0, columnspan=4, pady=(5, 0), sticky=(tk.W, tk.E))
 
-        # 底部：上传进度和状态（跨越两列）
-        progress_frame = ttk.Frame(dataset_frame)
-        progress_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
-        progress_frame.columnconfigure(0, weight=1)
-        # 上传进度
-        self.upload_progress_var = tk.DoubleVar()
-        self.upload_progress_bar = ttk.Progressbar(progress_frame, variable=self.upload_progress_var, maximum=100, mode='determinate', length=400)
-        self.upload_progress_bar.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        # 2. 数据集路径配置
+        path_frame = ttk.Labelframe(right_col, text="数据集路径配置", padding="10")
+        path_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        path_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(path_frame, text="本地数据集:").grid(row=0, column=0, sticky=tk.E, pady=2)
+        local_path_frame = ttk.Frame(path_frame)
+        local_path_frame.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        local_path_frame.columnconfigure(0, weight=1)
+        
+        self.local_path_var = tk.StringVar(value=self.dataset_config['local_path'])
+        ttk.Entry(local_path_frame, textvariable=self.local_path_var).grid(row=0, column=0, sticky=(tk.W, tk.E))
+        ttk.Button(local_path_frame, text="选择", command=self.select_dataset_path, width=5).grid(row=0, column=1, padx=(5, 0))
+        
+        ttk.Label(path_frame, text="远程路径:").grid(row=1, column=0, sticky=tk.E, pady=2)
+        self.remote_path_var = tk.StringVar(value=self.dataset_config['remote_path'])
+        ttk.Entry(path_frame, textvariable=self.remote_path_var).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        
+        # 3. 数据集信息
+        info_frame = ttk.Labelframe(right_col, text="数据集信息", padding="10")
+        info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        info_frame.columnconfigure(1, weight=1)
+        info_frame.columnconfigure(3, weight=1)
+        
+        ttk.Label(info_frame, text="数据集名称:").grid(row=0, column=0, sticky=tk.E, pady=2)
+        self.dataset_name_var = tk.StringVar(value=self.dataset_config['dataset_name'])
+        ttk.Entry(info_frame, textvariable=self.dataset_name_var, width=15).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 10), pady=2)
+        
+        ttk.Label(info_frame, text="类别数量:").grid(row=0, column=2, sticky=tk.E, pady=2)
+        self.num_classes_var = tk.StringVar(value=str(self.dataset_config['num_classes']))
+        ttk.Entry(info_frame, textvariable=self.num_classes_var, width=10, state="readonly").grid(row=0, column=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        
+        ttk.Label(info_frame, text="类别列表:").grid(row=1, column=0, sticky=(tk.E, tk.N), pady=2)
+        self.classes_text = scrolledtext.ScrolledText(info_frame, height=2, width=40)
+        self.classes_text.grid(row=1, column=1, columnspan=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        
+        # 4. Dataset.yaml配置
+        yaml_frame = ttk.Labelframe(right_col, text="Dataset.yaml配置", padding="10")
+        yaml_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        yaml_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(yaml_frame, text="当前配置:").grid(row=0, column=0, sticky=(tk.E, tk.N), pady=2)
+        self.yaml_config_text = scrolledtext.ScrolledText(yaml_frame, height=3, width=50)
+        self.yaml_config_text.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        
+        ttk.Label(yaml_frame, text="路径检测:").grid(row=1, column=0, sticky=(tk.E, tk.N), pady=2)
+        self.path_issues_text = scrolledtext.ScrolledText(yaml_frame, height=2, width=50)
+        self.path_issues_text.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+
+        # 5. 操作进度提示 (放在右侧列的最下方)
+        status_info_frame = ttk.Frame(right_col)
+        status_info_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
+        status_info_frame.columnconfigure(0, weight=1)
+        right_col.rowconfigure(4, weight=1) # 让它占据剩余空间
+        
         self.upload_status_var = tk.StringVar(value="准备就绪")
-        ttk.Label(progress_frame, textvariable=self.upload_status_var).grid(row=1, column=0)
+        self.upload_progress_var = tk.DoubleVar()
+        
+        ttk.Label(status_info_frame, text="操作进度提示:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        ttk.Label(status_info_frame, textvariable=self.upload_status_var, wraplength=400).grid(row=1, column=0, sticky=(tk.W, tk.E), pady=2)
+        
+        self.upload_progress_bar = ttk.Progressbar(status_info_frame, variable=self.upload_progress_var, maximum=100)
+        self.upload_progress_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5)
+
+        # ==================== 底部区域 (Bottom Area) ====================
+        # (上传进度已移至上方控制区，此处只保留系统监控和日志)
+        monitor_log_frame = ttk.Frame(bottom_area)
+        monitor_log_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        monitor_log_frame.columnconfigure(0, weight=3, minsize=260)
+        monitor_log_frame.columnconfigure(1, weight=7, minsize=600)
+        monitor_log_frame.rowconfigure(0, weight=1)
+
+        monitor_frame = ttk.Labelframe(monitor_log_frame, text="系统监控", padding="5")
+        monitor_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 5))
+        monitor_frame.columnconfigure(0, weight=1)
+        monitor_frame.columnconfigure(1, weight=1)
+        monitor_frame.rowconfigure(0, weight=1)
+        monitor_frame.rowconfigure(1, weight=1)
+
+        self.gpu_utilization_frame = ttk.Labelframe(monitor_frame, text="GPU利用率", padding="3")
+        self.gpu_utilization_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(0, 3))
+
+        self.gpu_memory_frame = ttk.Labelframe(monitor_frame, text="GPU显存使用率", padding="3")
+        self.gpu_memory_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(3, 0))
+
+        self.cpu_frame = ttk.Labelframe(monitor_frame, text="CPU使用率", padding="3")
+        self.cpu_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 3))
+
+        self.memory_frame = ttk.Labelframe(monitor_frame, text="内存使用率", padding="3")
+        self.memory_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(3, 0))
+
+        self.init_monitoring_charts()
+
+        log_frame = ttk.Labelframe(monitor_log_frame, text="训练日志", padding="10")
+        log_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=60)
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
 
     def open_upload_settings(self):
         """打开上传参数设置窗口"""
@@ -453,7 +567,7 @@ class CloudTrainingGUI:
         top_frame.columnconfigure(1, weight=1)
         
         # 训练控制框架
-        control_frame = ttk.LabelFrame(top_frame, text="训练控制", padding="10")
+        control_frame = ttk.Labelframe(top_frame, text="训练控制", padding="10")
         control_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
         
         # 控制按钮布局为2x2
@@ -466,10 +580,11 @@ class CloudTrainingGUI:
         control_frame.columnconfigure(1, weight=1)
         
         # 训练状态框架
-        status_frame = ttk.LabelFrame(top_frame, text="训练状态", padding="10")
+        status_frame = ttk.Labelframe(top_frame, text="训练状态", padding="10")
         status_frame.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0))
         
-        self.training_status_var = tk.StringVar(value="未开始")
+        if not hasattr(self, "training_status_var"):
+            self.training_status_var = tk.StringVar(value="未开始")
         status_label = ttk.Label(status_frame, textvariable=self.training_status_var, font=("Arial", 12, "bold"))
         status_label.grid(row=0, column=0, pady=5)
         
@@ -479,7 +594,8 @@ class CloudTrainingGUI:
         self.training_progress_bar.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=5)
         
         # 当前epoch显示
-        self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
+        if not hasattr(self, "current_epoch_var"):
+            self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
         ttk.Label(status_frame, textvariable=self.current_epoch_var).grid(row=2, column=0, pady=2)
         
         status_frame.columnconfigure(0, weight=1)
@@ -494,7 +610,7 @@ class CloudTrainingGUI:
         main_content_frame.rowconfigure(0, weight=1)
         
         # 左侧：系统监控区域（竖向排列）
-        monitor_frame = ttk.LabelFrame(main_content_frame, text="系统监控", padding="5")
+        monitor_frame = ttk.Labelframe(main_content_frame, text="系统监控", padding="5")
         monitor_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
         
         # 配置监控区域网格：4行1列，竖向排列
@@ -505,26 +621,26 @@ class CloudTrainingGUI:
         monitor_frame.rowconfigure(3, weight=1)
         
         # GPU利用率监控
-        self.gpu_utilization_frame = ttk.LabelFrame(monitor_frame, text="GPU利用率", padding="3")
+        self.gpu_utilization_frame = ttk.Labelframe(monitor_frame, text="GPU利用率", padding="3")
         self.gpu_utilization_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3))
         
         # GPU显存监控
-        self.gpu_memory_frame = ttk.LabelFrame(monitor_frame, text="GPU显存使用率", padding="3")
+        self.gpu_memory_frame = ttk.Labelframe(monitor_frame, text="GPU显存使用率", padding="3")
         self.gpu_memory_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 3))
         
         # CPU使用率监控
-        self.cpu_frame = ttk.LabelFrame(monitor_frame, text="CPU使用率", padding="3")
+        self.cpu_frame = ttk.Labelframe(monitor_frame, text="CPU使用率", padding="3")
         self.cpu_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 3))
         
         # 内存使用率监控
-        self.memory_frame = ttk.LabelFrame(monitor_frame, text="内存使用率", padding="3")
+        self.memory_frame = ttk.Labelframe(monitor_frame, text="内存使用率", padding="3")
         self.memory_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0))
         
         # 初始化监控图表占位符
         self.init_monitoring_charts()
         
         # 右侧：日志显示框架
-        log_frame = ttk.LabelFrame(main_content_frame, text="训练日志", padding="10")
+        log_frame = ttk.Labelframe(main_content_frame, text="训练日志", padding="10")
         log_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         self.log_text = scrolledtext.ScrolledText(log_frame, height=25, width=60)
@@ -533,28 +649,11 @@ class CloudTrainingGUI:
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
     
-    def setup_status_bar(self, parent):
-        """设置状态栏"""
-        status_frame = ttk.Frame(parent)
-        status_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E))
-        
-        self.status_var = tk.StringVar(value="准备就绪")
-        ttk.Label(status_frame, textvariable=self.status_var).grid(row=0, column=0, sticky=tk.W)
-        
-        # 时间显示
-        self.time_var = tk.StringVar()
-        ttk.Label(status_frame, textvariable=self.time_var).grid(row=0, column=1, sticky=tk.E)
-        
-        status_frame.columnconfigure(0, weight=1)
-        
-        # 更新时间
-        self.update_time()
-    
-    def update_time(self):
-        """更新时间显示"""
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.time_var.set(current_time)
-        self.root.after(1000, self.update_time)
+    # 移除或注释掉无用的状态栏相关代码
+    # def setup_status_bar(self, parent):
+    #     ...
+    # def update_time(self):
+    #     ...
     
     def load_config(self):
         try:
@@ -701,6 +800,7 @@ class CloudTrainingGUI:
         self.connection_status_var.set("连接成功")
         self.connection_status_label.config(foreground="green")
         self.log_message("服务器连接测试成功")
+        self.start_system_monitoring()
     
     def connection_test_failed(self, error):
         """连接测试失败"""
@@ -709,19 +809,44 @@ class CloudTrainingGUI:
         self.connection_status_label.config(foreground="red")
         self.log_message(f"服务器连接测试失败: {error}")
     
-    def update_server_config(self):
-        """更新服务器配置"""
-        self.server_config['hostname'] = self.hostname_var.get()
-        self.server_config['port'] = int(self.port_var.get())
-        self.server_config['username'] = self.username_var.get()
+    def update_all_configs(self):
+        """统一从界面读取最新的所有配置并保存"""
+        # 1. 更新服务器配置
+        self.server_config['hostname'] = self.hostname_var.get().strip()
+        try:
+            self.server_config['port'] = int(self.port_var.get().strip())
+        except ValueError:
+            pass
+        self.server_config['username'] = self.username_var.get().strip()
         self.server_config['password'] = self.password_var.get()
-        self.server_config['key_file'] = self.key_file_var.get()
+        self.server_config['key_file'] = self.key_file_var.get().strip()
+
+        # 2. 更新数据集配置
+        self.dataset_config['local_path'] = self.local_path_var.get().strip()
+        self.dataset_config['remote_path'] = self.remote_path_var.get().strip()
+        self.dataset_config['dataset_name'] = self.dataset_name_var.get().strip()
+        # num_classes 是自动读取的，不需要手动更新回去
+
+        # 3. 更新训练参数配置
+        try:
+            self.training_config['epochs'] = int(self.epochs_var.get().strip())
+            self.training_config['batch_size'] = int(self.batch_size_var.get().strip())
+            self.training_config['learning_rate'] = float(self.learning_rate_var.get().strip())
+            self.training_config['image_size'] = int(self.image_size_var.get().strip())
+        except ValueError:
+            pass # 如果有非数字输入，暂时忽略（实际运行时会有其他校验）
+            
+        self.training_config['base_model'] = self.base_model_var.get().strip()
+
+    def update_server_config(self):
+        """更新服务器配置（向前兼容）"""
+        self.update_all_configs()
     
     def save_server_config(self):
-        """保存服务器配置"""
-        self.update_server_config()
+        """保存所有配置"""
+        self.update_all_configs()
         self.save_config()
-        messagebox.showinfo("成功", "服务器配置已保存")
+        messagebox.showinfo("成功", "所有配置已保存")
     
     def get_server_info(self):
         """获取服务器详细信息"""
@@ -1216,7 +1341,7 @@ class CloudTrainingGUI:
                 continue
                 
             # 类别标题
-            category_frame = ttk.LabelFrame(scrollable_frame, text=category_name, padding=10)
+            category_frame = ttk.Labelframe(scrollable_frame, text=category_name, padding=10)
             category_frame.pack(fill='x', pady=(10, 5), padx=10)
             
             for comp_key in category_components:
@@ -1958,6 +2083,33 @@ class CloudTrainingGUI:
             self.log_message(f"数据集分析失败: {e}")
             messagebox.showerror("错误", f"数据集分析失败: {e}")
     
+    def process_dataset(self):
+        try:
+            dataset_path = self.local_path_var.get()
+            if not dataset_path or not os.path.exists(dataset_path):
+                messagebox.showerror("错误", "请选择有效的数据集路径")
+                return
+                
+            self.log_message("正在后台处理数据集，请稍候...")
+            
+            def _process_task():
+                try:
+                    self.analyze_dataset()
+                    self.check_and_fix_dataset()
+                    self.generate_training_script()
+                    self.root.after(0, lambda: self.log_message("数据集处理完成！"))
+                    self.root.after(0, lambda: messagebox.showinfo("成功", "数据集处理及脚本生成完成！"))
+                except Exception as e:
+                    self.root.after(0, lambda err=str(e): self.log_message(f"处理数据集失败: {err}"))
+                    self.root.after(0, lambda err=str(e): messagebox.showerror("错误", f"处理数据集失败: {err}"))
+
+            # 启动后台线程执行处理任务，避免阻塞主界面
+            threading.Thread(target=_process_task, daemon=True).start()
+            
+        except Exception as e:
+            self.log_message(f"启动处理任务失败: {e}")
+            messagebox.showerror("错误", f"启动处理任务失败: {e}")
+
     def check_yaml_paths(self, yaml_data, dataset_path):
         """检查yaml配置中的路径问题"""
         issues = []
@@ -2225,19 +2377,27 @@ class CloudTrainingGUI:
         """修正云端数据集目录结构"""
         try:
             # 连接到云端服务器
+            self.update_all_configs() # 确保获取最新的服务器配置
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
             update_progress("连接到云端服务器...")
-            ssh.connect(
-                hostname=self.server_config['hostname'],
-                port=self.server_config['port'],
-                username=self.server_config['username'],
-                password=self.server_config['password']
-            )
+            
+            connect_params = {
+                'hostname': self.server_config['hostname'],
+                'port': self.server_config['port'],
+                'username': self.server_config['username'],
+                'timeout': 15
+            }
+            if self.server_config['key_file']:
+                connect_params['key_filename'] = self.server_config['key_file']
+            elif self.server_config['password']:
+                connect_params['password'] = self.server_config['password']
+                
+            ssh.connect(**connect_params)
             
             dataset_name = self.dataset_config['dataset_name']
-            remote_path = f"/root/{dataset_name}"
+            remote_path = self.dataset_config['remote_path'] # 使用用户配置的远程路径
             
             # 检查云端目录结构
             update_progress("检查云端目录结构...")
@@ -2248,14 +2408,12 @@ class CloudTrainingGUI:
             if "train" not in ls_output or "val" not in ls_output:
                 update_progress("云端目录结构需要重组...")
                 
-                # 创建修复脚本
+                # 创建修复脚本，移除耗时巨大的 cp -r 备份命令
                 fix_script = f"""#!/bin/bash
 # 云端数据集结构修复脚本
-cd {remote_path}
+cd {remote_path} || exit 1
 
-# 备份当前数据
-echo "备份当前数据..."
-cp -r . ../backup_{dataset_name}_$(date +%Y%m%d_%H%M%S)
+# 不再进行全量备份以节省时间和空间
 
 # 创建标准目录结构
 echo "创建标准目录结构..."
@@ -2268,6 +2426,12 @@ find . -maxdepth 1 -name "*.txt" > /tmp/labels.txt
 
 # 计算文件数量
 img_count=$(wc -l < /tmp/images.txt)
+if [ "$img_count" -eq 0 ]; then
+    echo "未在根目录找到图片文件，跳过重组。"
+    rm -f /tmp/images.txt /tmp/labels.txt
+    exit 0
+fi
+
 train_count=$((img_count * 80 / 100))
 
 echo "总图片数: $img_count, 训练集: $train_count"
@@ -2305,12 +2469,31 @@ echo "云端目录结构修复完成!"
                 stdout.read()
                 
                 update_progress("执行修复脚本...")
+                # 增加 nohup 后台执行，防止网络波动导致 SSH 会话阻塞
                 stdin, stdout, stderr = ssh.exec_command("chmod +x /tmp/fix_dataset.sh && /tmp/fix_dataset.sh")
-                script_output = stdout.read().decode()
-                script_error = stderr.read().decode()
                 
-                if script_error:
-                    update_progress(f"脚本执行警告: {script_error}")
+                # 增加超时控制读取
+                import select
+                channel = stdout.channel
+                timeout = 60 # 设置60秒超时
+                start_time = time.time()
+                
+                output = []
+                while not channel.exit_status_ready():
+                    if time.time() - start_time > timeout:
+                        update_progress("脚本执行超时，但可能仍在后台运行。")
+                        break
+                    if channel.recv_ready():
+                        output.append(channel.recv(1024).decode())
+                    time.sleep(0.5)
+                
+                # 读取剩余输出
+                if channel.recv_ready():
+                    output.append(channel.recv(1024).decode())
+                
+                if channel.recv_stderr_ready():
+                    error = channel.recv_stderr(1024).decode()
+                    update_progress(f"脚本执行警告: {error}")
                 
                 update_progress("云端结构修复完成")
             else:
@@ -2320,7 +2503,7 @@ echo "云端目录结构修复完成!"
             
         except Exception as e:
             update_progress(f"云端结构修正失败: {e}")
-            if 'ssh' in locals():
+            if 'ssh' in locals() and ssh:
                 ssh.close()
             # 不抛出异常，允许本地修正继续进行
     
@@ -2331,12 +2514,9 @@ echo "云端目录结构修复完成!"
                 messagebox.showerror("错误", "请先选择数据集路径")
                 return
             
-            # 更新训练配置
-            self.training_config['epochs'] = int(self.epochs_var.get())
-            self.training_config['batch_size'] = int(self.batch_size_var.get())
-            self.training_config['learning_rate'] = float(self.learning_rate_var.get())
-            self.training_config['image_size'] = int(self.image_size_var.get())
-            self.training_config['base_model'] = self.base_model_var.get()
+            # 更新所有配置并保存
+            self.update_all_configs()
+            self.save_config()
             
             # 生成训练脚本内容
             script_content = self.create_training_script_content()
@@ -2358,7 +2538,8 @@ echo "云端目录结构修复完成!"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dataset_name = self.dataset_config['dataset_name']
         num_classes = self.dataset_config['num_classes']
-        remote_path = self.dataset_config['remote_path']
+        # 确保脚本中使用的也是经过清洗的纯正 Linux 路径
+        remote_path = self.dataset_config['remote_path'].replace('\\', '/').rstrip('/')
         epochs = self.training_config['epochs']
         batch_size = self.training_config['batch_size']
         learning_rate = self.training_config['learning_rate']
@@ -2545,15 +2726,28 @@ if __name__ == "__main__":
         except Exception:
             return {}
 
-    def _upload_worker(self, ssh_transport, local_file, remote_file, retry_times):
-        """单个文件上传（含重试）"""
-        print(f'[DEBUG] _upload_worker start  {os.path.basename(local_file)}')
+    def _upload_worker(self, connect_params, local_file, remote_file, retry_times):
+        """单个文件上传（含重试），每个线程独立建立连接避免通道冲突"""
         import stat
-        scp = SCPClient(ssh_transport)
+        
+        # 提取远程目录
+        remote_dir = os.path.dirname(remote_file).replace("\\", "/")
+        
         for attempt in range(1, retry_times + 1):
+            ssh = None
             try:
-                # 使用SFTP进行秒传判断与目录创建
-                with paramiko.SFTPClient.from_transport(ssh_transport) as sftp:
+                # 1. 独立建立SSH连接
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(**connect_params, timeout=10)
+                
+                # 2. 使用SFTP进行秒传判断与目录创建
+                with ssh.open_sftp() as sftp:
+                    # 确保远程目录存在（执行 mkdir -p 更安全快捷）
+                    # 只在第一次尝试时或者真的需要时创建目录，防止疯狂发起命令
+                    stdin, stdout, stderr = ssh.exec_command(f"mkdir -p '{remote_dir}'")
+                    stdout.channel.recv_exit_status() # 等待目录创建完成
+
                     # 秒传：远程文件大小一致则跳过
                     try:
                         remote_stat = sftp.stat(remote_file)
@@ -2561,43 +2755,22 @@ if __name__ == "__main__":
                         if stat.S_ISREG(remote_stat.st_mode) and remote_stat.st_size == local_size:
                             return 'skip'
                     except FileNotFoundError:
-                        pass
-
-                    # 确保远程目录存在（逐级创建）
-                    remote_dir = os.path.dirname(remote_file).replace("\\", "/")
-                    parts = [p for p in remote_dir.split('/') if p]
-                    prefix = '/' if remote_dir.startswith('/') else ''
-                    built = []
-                    for p in parts:
-                        built.append(p)
-                        path = prefix + '/'.join(built)
-                        try:
-                            st = sftp.stat(path)
-                            if not stat.S_ISDIR(st.st_mode):
-                                # 若同名非目录，则抛出异常
-                                raise IOError(f"Remote path exists and is not a directory: {path}")
-                        except FileNotFoundError:
-                            try:
-                                sftp.mkdir(path)
-                            except Exception:
-                                # 并发场景下可能已被其他线程创建，若已存在则忽略
-                                try:
-                                    st2 = sftp.stat(path)
-                                    if not stat.S_ISDIR(st2.st_mode):
-                                        raise
-                                except Exception:
-                                    raise
-
-                # 上传文件
-                scp.put(local_file, remote_file)
-                print(f'[DEBUG] _upload_worker ok  {os.path.basename(local_file)}')
+                        pass # 远程文件不存在，继续上传流程
+                    
+                    # 3. 使用 sftp.put 替代 scp，更加稳定且避免 No such file or directory 错误
+                    sftp.put(local_file, remote_file)
+                    
                 return 'ok'
+                
             except Exception as e:
                 if attempt == retry_times:
-                    print(f'[DEBUG] _upload_worker fail  {os.path.basename(local_file)}  {e}')
+                    print(f'[DEBUG] _upload_worker fail {os.path.basename(local_file)} error: {e}')
                     return f'fail:{e}'
                 time.sleep(1)
-        print(f'[DEBUG] _upload_worker fail:unknown  {os.path.basename(local_file)}')
+            finally:
+                if ssh:
+                    ssh.close()
+                    
         return 'fail:unknown'
 
     def upload_dataset(self):
@@ -2615,30 +2788,38 @@ if __name__ == "__main__":
 
         def upload_thread():
             try:
-                # 读取并发度与重试次数
-                max_workers = self.config.get('upload', {}).get('max_workers', 8)
+                # 读取并发度与重试次数 (降低并发度防止触发SSH连接限制)
+                max_workers = self.config.get('upload', {}).get('max_workers', 4)
+                if max_workers > 4:
+                    max_workers = 4 # 强制限制最大并发，防止 SSH MaxStartups 拒绝连接
                 retry_times = self.config.get('upload', {}).get('retry_times', 3)
 
                 self.root.after(0, lambda: self.upload_status_var.set("正在扫描文件..."))
                 self.root.after(0, lambda: self._set_upload_progress(0))
 
-                # 建立 SSH 连接
+                # 建立 SSH 连接，动态获取当前界面上的连接配置
+                self.update_server_config() # 确保配置是最新的
+                
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                
                 connect_params = {
                     'hostname': self.server_config['hostname'],
                     'port': self.server_config['port'],
                     'username': self.server_config['username']
                 }
+                
                 if self.server_config['key_file']:
                     connect_params['key_filename'] = self.server_config['key_file']
-                else:
+                elif self.server_config['password']:
                     connect_params['password'] = self.server_config['password']
+                
                 ssh.connect(**connect_params)
                 transport = ssh.get_transport()
 
                 local_path  = self.dataset_config['local_path']
-                remote_path = self.remote_path_var.get().rstrip('/')
+                # 强制使用正斜杠处理远端基础路径
+                remote_path = self.remote_path_var.get().replace('\\', '/').rstrip('/')
                 ckpt_path   = os.path.join(local_path, '.upload_checkpoint.json')
 
                 # 扫描全部文件
@@ -2646,8 +2827,10 @@ if __name__ == "__main__":
                 for root, _, files in os.walk(local_path):
                     for f in files:
                         local_file = os.path.join(root, f)
-                        rel_path   = os.path.relpath(local_file, local_path)
-                        remote_file = f"{remote_path}/{rel_path}".replace('\\', '/')
+                        # 使用 os.path.relpath 计算相对路径，然后强制转换为 Unix 风格的正斜杠
+                        rel_path   = os.path.relpath(local_file, local_path).replace('\\', '/')
+                        # 确保组合后的路径也是纯正斜杠
+                        remote_file = f"{remote_path}/{rel_path}"
                         all_files.append((local_file, remote_file))
                 total = len(all_files)
                 self.root.after(0, lambda: self.upload_status_var.set(f"共 {total} 个文件，加载断点..."))
@@ -2676,7 +2859,7 @@ if __name__ == "__main__":
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     future_map = {}
                     for local_file, remote_file in todo:
-                        fut = pool.submit(self._upload_worker, transport, local_file, remote_file, retry_times)
+                        fut = pool.submit(self._upload_worker, connect_params, local_file, remote_file, retry_times)
                         future_map[fut] = local_file
 
                     for fut in as_completed(future_map):
@@ -2741,10 +2924,16 @@ if __name__ == "__main__":
                     ssh.connect(**connect_params)
                     
                     # 清理命令
-                    remote_path = self.remote_path_var.get()
-                    ssh.exec_command(f'rm -rf {remote_path}')
-                    ssh.exec_command('rm -rf /root/runs')
-                    ssh.exec_command('rm -f /root/*.py')
+                    # 确保获取的是用户界面上配置的最新路径，并且强制转换为纯正的 Linux 路径格式
+                    remote_path = self.remote_path_var.get().replace('\\', '/').rstrip('/')
+                    if not remote_path or remote_path == '/' or remote_path == '/root':
+                        self.root.after(0, lambda: messagebox.showwarning("警告", "远程路径配置危险，禁止清理整个根目录！"))
+                        return
+                        
+                    self.root.after(0, lambda: self.log_message(f"开始清理云端数据集目录: {remote_path}"))
+                    ssh.exec_command(f"rm -rf '{remote_path}'")
+                    ssh.exec_command("rm -rf /root/runs")
+                    ssh.exec_command("rm -f /root/*.py")
                     
                     ssh.close()
                     
@@ -2765,6 +2954,7 @@ if __name__ == "__main__":
             try:
                 self.root.after(0, lambda: self.training_status_var.set("训练中..."))
                 self.is_training = True
+                self.training_start_time = time.time()
                 
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -2874,8 +3064,10 @@ else:
     sys.exit(1)
 '''
                         
-                        # 执行下载脚本
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && python3 -c "{download_script}"')
+                        upload_cmd = f"cat > /tmp/predownload_model.py << 'PY'\n{download_script}\nPY"
+                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {upload_cmd}')
+                        stdout.channel.recv_exit_status()
+                        stdin, stdout, stderr = ssh.exec_command('cd /root && python3 /tmp/predownload_model.py')
                         download_output = stdout.read().decode('utf-8')
                         download_error = stderr.read().decode('utf-8')
                         
@@ -2936,7 +3128,8 @@ else:
                 
                 # 检查可用的Python命令
                 python_cmd = None
-                for cmd in ['python3', 'python', '/usr/bin/python3', '/usr/bin/python']:
+                # 优先检查 miniforge3/anaconda 环境，它通常自带编译好的 PyTorch
+                for cmd in ['/root/miniforge3/bin/python3', '/root/anaconda3/bin/python3', '/root/miniconda3/bin/python3', 'python3', 'python', '/usr/bin/python3', '/usr/bin/python']:
                     stdin, stdout, stderr = ssh.exec_command(f'which {cmd} && {cmd} --version')
                     result = stdout.read().decode('utf-8')
                     if result and 'Python' in result:
@@ -3024,7 +3217,7 @@ else:
                     # 系统包映射
                     system_package_map = {
                         'numpy': 'python3-numpy',
-                        'cv2': 'python3-opencv',
+                        'cv2': 'python3-opencv libgl1-mesa-glx libglib2.0-0',
                         'PIL': 'python3-pil',
                         'yaml': 'python3-yaml'
                     }
@@ -3106,6 +3299,10 @@ else:
                             self.root.after(0, lambda err=str(e): self.log_message(f"❌ Python版本升级过程中出现错误: {err}"))
                             self.root.after(0, lambda: self.log_message("继续使用当前Python版本进行包安装"))
                     
+                    constraints_path = "/tmp/pip_constraints.txt"
+                    ssh.exec_command(f"cd /root && printf 'numpy<2\n' > {constraints_path}")
+                    pip_constraint = f"-c {constraints_path}"
+                    
                     # 定义pip安装命令（确保使用相同的Python环境）
                     pip_install_commands = []
                     # 处理NumPy兼容性
@@ -3114,16 +3311,16 @@ else:
                         numpy_version = stdout.read().decode('utf-8').strip()
                         if numpy_version and numpy_version.split('.')[0] >= '2' and python_version in ["3.8", "3.9"]:
                             fix_uninstall = f'{python_cmd} -m pip uninstall -y numpy || true'
-                            fix_install = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4"'
+                            fix_install = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'
                             pip_install_commands.append(("卸载不兼容numpy", fix_uninstall))
                             pip_install_commands.append(("安装兼容numpy", fix_install))
                             self.root.after(0, lambda v=numpy_version: self.log_message(f"⚙ 检测到NumPy {v} 与Python {python_version}不兼容，已执行兼容修复"))
                     except Exception as _:
                         pass
                     if 'numpy' in missing_packages:
-                        pip_install_commands.append(("安装numpy", f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4"'))
+                        pip_install_commands.append(("安装numpy", f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'))
                     # OpenCV 与 NumPy 兼容性：当 NumPy 选用 1.26.x 时，固定 OpenCV 版本
-                    pip_install_commands.append(("安装兼容的opencv-python", f"{python_cmd} -m pip install --force-reinstall --no-cache-dir 'opencv-python==4.7.0.72'"))
+                    pip_install_commands.append(("安装兼容的opencv-python", f"{python_cmd} -m pip install --force-reinstall --no-cache-dir 'opencv-python==4.7.0.72' {pip_constraint}"))
                     if 'torch' in pip_missing:
                         # 检测GPU
                         has_gpu = False
@@ -3134,23 +3331,23 @@ else:
                         except Exception:
                             has_gpu = False
                         # 安装兼容的networkx版本
-                        networkx_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "networkx==2.8.8"'
+                        networkx_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "networkx==2.8.8" {pip_constraint}'
                         pip_install_commands.append(("安装兼容的networkx", networkx_cmd))
                         if has_gpu:
                             # 优先使用 cu121；如失败后续回退在验证阶段处理
                             cuda_index = 'https://download.pytorch.org/whl/cu121'
                             if python_version in ["3.8", "3.9"]:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index}'
+                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index} {pip_constraint}'
                             else:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index}'
+                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index} {pip_constraint}'
                             pip_install_commands.append(("安装PyTorch(CUDA)", torch_cmd))
                             self.root.after(0, lambda: self.log_message("⚙ 检测到GPU，安装CUDA版PyTorch"))
                         else:
                             if python_version in ["3.8", "3.9"]:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.0.1" "torchvision==0.15.2" "torchaudio==2.0.2" --index-url https://download.pytorch.org/whl/cpu'
+                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.0.1" "torchvision==0.15.2" "torchaudio==2.0.2" --index-url https://download.pytorch.org/whl/cpu {pip_constraint}'
                                 self.root.after(0, lambda: self.log_message(f"🔧 使用稳定的PyTorch 2.0.1(CPU)（兼容Python {python_version}）"))
                             else:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url https://download.pytorch.org/whl/cpu'
+                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url https://download.pytorch.org/whl/cpu {pip_constraint}'
                                 self.root.after(0, lambda: self.log_message(f"🚀 使用稳定的PyTorch 2.1.0(CPU)（适用于Python {python_version}）"))
                             pip_install_commands.append(("安装PyTorch(CPU)", torch_cmd))
                     
@@ -3158,21 +3355,21 @@ else:
                         # 为了确保稳定性，Python 3.8和3.9都使用经过验证的兼容版本
                         if python_version in ["3.8", "3.9"]:
                             # 使用稳定的ultralytics 8.0.196版本，兼容Python 3.8和3.9
-                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.0.196"'
+                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.0.196" {pip_constraint}'
                             self.root.after(0, lambda: self.log_message(f"🔧 使用稳定的ultralytics 8.0.196版本（兼容Python {python_version}）"))
                         else:
                             # 对于Python 3.10+，使用较新但稳定的版本
-                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.1.0"'
+                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.1.0" {pip_constraint}'
                             self.root.after(0, lambda: self.log_message(f"🚀 使用稳定的ultralytics 8.1.0版本（适用于Python {python_version}）"))
                         pip_install_commands.append(("安装ultralytics", ultralytics_cmd))
                     
                     if 'matplotlib' in pip_missing:
                         # 安装兼容的matplotlib版本，避免循环导入问题
                         if python_version in ["3.8", "3.9"]:
-                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.7.5"'
+                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.7.5" {pip_constraint}'
                             self.root.after(0, lambda: self.log_message(f"🔧 安装matplotlib 3.7.5（兼容Python {python_version} 与NumPy 1.26）"))
                         else:
-                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.8.4"'
+                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.8.4" {pip_constraint}'
                             self.root.after(0, lambda: self.log_message(f"🚀 安装matplotlib 3.8.4（适用于Python {python_version}）"))
                         
                         # 清理用户站点中残留的matplotlib，避免与系统site-packages冲突
@@ -3268,9 +3465,9 @@ else:
                             if need_cuda_reinstall:
                                 cuda_index = 'https://download.pytorch.org/whl/cu121'
                                 if python_version in ["3.8", "3.9"]:
-                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index}'
+                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index} {pip_constraint}'
                                 else:
-                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index}'
+                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index} {pip_constraint}'
                                 pip_install_commands.append(("重装PyTorch为CUDA版", reinstall_cmd))
                                 self.root.after(0, lambda: self.log_message("🔁 检测到GPU但PyTorch不支持CUDA，追加CUDA版重装"))
                             else:
@@ -3392,6 +3589,18 @@ else:
                                             self.root.after(0, lambda p=package_name, out=test_output: self.log_message(f"✅ {p} 导入测试成功: {out}"))
                                         else:
                                             self.root.after(0, lambda p=package_name, err=test_error: self.log_message(f"⚠ {p} 安装后导入测试失败: {err[:100]}"))
+                        
+                        self.root.after(0, lambda: self.log_message("🔧 锁定NumPy版本避免2.x冲突..."))
+                        numpy_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'
+                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {numpy_fix_cmd} --progress-bar on --verbose')
+                        stdout.channel.recv_exit_status()
+                        
+                        if python_version in ["3.8", "3.9"]:
+                            matplotlib_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.7.5" {pip_constraint}'
+                        else:
+                            matplotlib_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.8.4" {pip_constraint}'
+                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {matplotlib_fix_cmd} --progress-bar on --verbose')
+                        stdout.channel.recv_exit_status()
                         
                         # 强制刷新Python模块缓存
                         self.root.after(0, lambda: self.log_message("🔄 刷新Python模块缓存..."))
@@ -4520,8 +4729,8 @@ else:
         # 设置matplotlib样式
         plt.style.use('seaborn-v0_8-darkgrid')
         
-        # 调整图表大小为原来的1/4（缩小图表）
-        chart_width, chart_height = 2.5, 1.8
+        # 调整图表大小以适应2x2网格
+        chart_width, chart_height = 3.0, 1.5
         
         # GPU利用率监控图表
         self.monitoring_figures['gpu_util'] = Figure(figsize=(chart_width, chart_height), dpi=80)
@@ -4645,7 +4854,7 @@ else:
                 now = time.time()
                 if now - self._last_monitor_log >= 10:
                     debug_msg = f"SSH状态: {ssh_status} | 监控数据 - GPU利用率: {gpu_util}%, GPU显存: {gpu_memory}%, CPU: {cpu_usage}%, 内存: {memory_usage}%"
-                    self.root.after(0, lambda msg=debug_msg: self.log_message(msg))
+                    # self.root.after(0, lambda msg=debug_msg: self.log_message(msg))
                     self._last_monitor_log = now
                 
                 # 添加数据到队列
@@ -4655,6 +4864,10 @@ else:
                 self.gpu_memory_data.append(gpu_memory)
                 self.cpu_data.append(cpu_usage)
                 self.memory_data.append(memory_usage)
+                if hasattr(self, "status_gpu_util_var"):
+                    self.root.after(0, lambda v=gpu_util: self.status_gpu_util_var.set(f"GPU: {v:.0f}%"))
+                if hasattr(self, "status_gpu_memory_var"):
+                    self.root.after(0, lambda v=gpu_memory: self.status_gpu_memory_var.set(f"显存: {v:.0f}%"))
                 
                 # 更新图表（合并刷新，限速）
                 self._schedule_monitor_update()
@@ -4876,6 +5089,8 @@ else:
             if not self.ssh_client:
                 return
             status_text = None
+            current_epoch = None
+            total_epochs = None
             # 若未知运行目录，尝试从日志中解析或从runs/train挑选最新
             if not self.training_run_dir:
                 if self.training_log_file:
@@ -4901,9 +5116,9 @@ else:
                     ansi = re.compile(r'\x1B\[[0-9;]*[A-Za-z]')
                     text = ansi.sub('', content)
                     m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', text)
-                    total_epochs = int(m_total.group(1)) if m_total else None
+                    total_epochs = int(m_total.group(1)) if m_total else total_epochs
                     m_epoch = re.findall(r'^\s*Epoch', text, flags=re.MULTILINE)
-                    current_epoch = len(m_epoch) if m_epoch else None
+                    current_epoch = len(m_epoch) if m_epoch else current_epoch
                     m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', text)
                     if m_step:
                         pct = int(m_step.group(1))
@@ -4931,14 +5146,33 @@ else:
                             total_ep = int(self.training_config.get('epochs'))
                         except:
                             pass
+                        current_epoch = ep
                         if total_ep:
+                            total_epochs = total_ep
                             status_text = f"训练中: epoch {ep}/{total_ep}"
                         else:
                             status_text = f"训练中: epoch {ep}"
                     except:
                         pass
+            epoch_text = None
+            if total_epochs or current_epoch is not None:
+                if total_epochs:
+                    epoch_text = f"Epoch: {current_epoch if current_epoch is not None else 0}/{total_epochs}"
+                else:
+                    epoch_text = f"Epoch: {current_epoch}/?"
             if status_text:
                 self.root.after(0, lambda s=status_text: self.training_status_var.set(s))
+            if epoch_text:
+                # 更新时长
+                if hasattr(self, "status_duration_var") and hasattr(self, "training_start_time") and self.training_start_time:
+                    duration = time.time() - self.training_start_time
+                    m, s = divmod(int(duration), 60)
+                    h, m = divmod(m, 60)
+                    duration_text = f"时长: {h:02d}:{m:02d}:{s:02d}"
+                    self.root.after(0, lambda s=duration_text: self.status_duration_var.set(s))
+
+                if hasattr(self, "current_epoch_var"):
+                    self.root.after(0, lambda s=epoch_text: self.current_epoch_var.set(s))
         except:
             pass
     
@@ -5341,7 +5575,7 @@ else:
             info_label.pack(pady=(0, 10))
             
             # 包选择框架
-            package_frame = ttk.LabelFrame(main_frame, text="选择安装包", padding="10")
+            package_frame = ttk.Labelframe(main_frame, text="选择安装包", padding="10")
             package_frame.pack(fill=tk.X, pady=(0, 10))
             
             # PyTorch包选择
@@ -5378,7 +5612,7 @@ else:
                       command=lambda: self.select_deps_directory()).pack(side=tk.RIGHT)
             
             # 安装选项
-            options_frame = ttk.LabelFrame(main_frame, text="安装选项", padding="10")
+            options_frame = ttk.Labelframe(main_frame, text="安装选项", padding="10")
             options_frame.pack(fill=tk.X, pady=(0, 10))
             
             self.force_reinstall_var = tk.BooleanVar()
@@ -5390,7 +5624,7 @@ else:
                            variable=self.no_deps_var).pack(anchor=tk.W)
             
             # 进度显示
-            progress_frame = ttk.LabelFrame(main_frame, text="安装进度", padding="10")
+            progress_frame = ttk.Labelframe(main_frame, text="安装进度", padding="10")
             progress_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
             
             self.local_install_progress = ttk.Progressbar(progress_frame, mode='indeterminate')
@@ -5707,7 +5941,12 @@ else:
         self.logger.info(message)
 
 def main():
-    root = tk.Tk()
+    root = ttk.Window(title="云端训练脚本优化管理平台", themename="cosmo", size=(1200, 800))
+    # 设置全局字体
+    default_font = ('Microsoft YaHei', 10)
+    root.option_add("*Font", default_font)
+    style = ttk.Style()
+    style.configure('.', font=default_font)
     app = CloudTrainingGUI(root)
     root.mainloop()
 

@@ -4,7 +4,7 @@
 自动生成的YOLO训练脚本
 数据集: yolo_dataset
 类别数: 1
-生成时间: 2026-01-17 13:19:11
+生成时间: 2026-03-23 16:23:58
 训练参数: epochs=300, batch=20, lr=0.01
 """
 
@@ -123,10 +123,10 @@ def main():
             epochs=300,
             batch=20,
             lr0=0.01,
-            imgsz=1024,
+            imgsz=640,
             device=device_arg,
             project='runs/train',
-            name='yolo_training_20260117_131911',
+            name='yolo_training_20260323_162358',
             save=True,
             save_period=10,
             val=True,
@@ -139,10 +139,10 @@ def main():
                 epochs=300,
                 batch=20,
                 lr0=0.01,
-                imgsz=1024,
+                imgsz=640,
                 device='cpu',
                 project='runs/train',
-                name='yolo_training_20260117_131911',
+                name='yolo_training_20260323_162358',
                 save=True,
                 save_period=10,
                 val=True,

@@ -1,17 +1,17 @@
 {
   "server": {
-    "hostname": "43.133.189.226",
+    "hostname": "43.153.131.4",
     "port": 22,
     "username": "root",
-    "password": "Qa123456",
+    "password": "Vonzeus01",
     "key_file": ""
   },
   "dataset": {
-    "local_path": "E:/processed_1024x1024/yolo_dataset",
+    "local_path": "D:/picture/HCP4/HCP系列黑色小内芯/processed_1024x1024/yolo_dataset",
     "remote_path": "/root/yolo_dataset",
     "dataset_name": "yolo_dataset",
     "classes": [
-      "焊点漏包"
+      "黑色内芯"
     ],
     "num_classes": 1
   },
@@ -19,7 +19,7 @@
     "epochs": 300,
     "batch_size": 20,
     "learning_rate": 0.01,
-    "image_size": 1024,
+    "image_size": 640,
     "base_model": "yolov8s.pt"
   },
   "upload": {
