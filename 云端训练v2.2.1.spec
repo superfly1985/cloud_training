@@ -8,9 +8,9 @@ a = Analysis(
     datas=[('cloud_training_config.json', '.')],
     hiddenimports=[],
     hookspath=[],
-    hooksconfig={},
+    hooksconfig={'matplotlib': {'backends': ['TkAgg']}},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6'],
     noarchive=False,
     optimize=0,
 )
@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='云端训练v2.2.1',
+    name='云端训练v2.2.2',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -40,5 +40,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='云端训练v2.2.1',
+    name='云端训练v2.2.2',
 )

@@ -3,13 +3,14 @@
 """
 自动生成的YOLO训练脚本
 数据集: yolo_dataset
-类别数: 1
-生成时间: 2026-03-23 16:23:58
-训练参数: epochs=300, batch=20, lr=0.01
+类别数: 2
+生成时间: 2026-03-29 15:49:07
+训练参数: epochs=300, batch=30, lr=0.01
 """
 
 import os
 import sys
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 import torch
 import yaml
 from ultralytics import YOLO
@@ -33,6 +34,9 @@ def main():
         
         # 检查并下载YOLO模型
         model_name = "yolov8s.pt"
+        if model_name.startswith("yolov11"):
+            logger.warning(f"当前环境中的Ultralytics版本较旧，模型 {model_name} 可能不可用，自动回退为 yolov8s.pt")
+            model_name = "yolov8s.pt"
         logger.info(f"准备加载模型: {model_name}")
         
         def download_model_with_retry(model_name, max_retries=3):
@@ -85,7 +89,7 @@ def main():
             logger.info("尝试使用备用方案...")
             
             # 备用方案：尝试使用其他可用的模型
-            backup_models = ["yolov8s.pt", "yolov8n.pt", "yolov11s.pt", "yolov11n.pt"]
+            backup_models = ["yolov8s.pt", "yolov8n.pt", "yolov8m.pt", "yolov8l.pt"]
             model = None
             
             for backup_model in backup_models:
@@ -121,12 +125,12 @@ def main():
             results = model.train(
             data=yaml_path,
             epochs=300,
-            batch=20,
+            batch=30,
             lr0=0.01,
             imgsz=640,
             device=device_arg,
             project='runs/train',
-            name='yolo_training_20260323_162358',
+            name='yolo_training_20260329_154907',
             save=True,
             save_period=10,
             val=True,
@@ -137,12 +141,12 @@ def main():
             results = model.train(
                 data=yaml_path,
                 epochs=300,
-                batch=20,
+                batch=30,
                 lr0=0.01,
                 imgsz=640,
                 device='cpu',
                 project='runs/train',
-                name='yolo_training_20260323_162358',
+                name='yolo_training_20260329_154907',
                 save=True,
                 save_period=10,
                 val=True,

@@ -37,7 +37,7 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.1"
+        self.app_version = "v2.2.2"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -74,7 +74,9 @@ class CloudTrainingGUI:
         self.is_connected = False
         self.is_training = False
         self.is_monitoring = False
+        self.upload_in_progress = False
         self.upload_progress = 0
+        self.upload_cancel_event = threading.Event()
         
         # SSH客户端
         self.ssh_client = None
@@ -215,7 +217,7 @@ class CloudTrainingGUI:
         
         ttk.Button(button_frame, text="测试连接", command=self.test_connection).grid(row=0, column=0, padx=(0, 10))
         ttk.Button(button_frame, text="保存配置", command=self.save_server_config).grid(row=0, column=1, padx=(0, 10))
-        ttk.Button(button_frame, text="获取服务器详细信息", command=self.get_server_info).grid(row=0, column=2, padx=(0, 10))
+        ttk.Button(button_frame, text="文件管理器", command=self.get_server_info).grid(row=0, column=2, padx=(0, 10))
         
         # 连接状态显示
         self.connection_status_var = tk.StringVar(value="未连接")
@@ -314,7 +316,7 @@ class CloudTrainingGUI:
         server_button_frame.columnconfigure(2, weight=1)
         ttk.Button(server_button_frame, text="测试连接", command=self.test_connection).grid(row=0, column=0, padx=2, sticky=(tk.W, tk.E))
         ttk.Button(server_button_frame, text="保存配置", command=self.save_server_config).grid(row=0, column=1, padx=2, sticky=(tk.W, tk.E))
-        ttk.Button(server_button_frame, text="详细信息", command=self.get_server_info).grid(row=0, column=2, padx=2, sticky=(tk.W, tk.E))
+        ttk.Button(server_button_frame, text="文件管理器", command=self.get_server_info).grid(row=0, column=2, padx=2, sticky=(tk.W, tk.E))
 
         self.connection_status_var = tk.StringVar(value="未连接")
         self.connection_status_label = ttk.Label(server_frame, textvariable=self.connection_status_var, foreground="red", anchor="center")
@@ -362,7 +364,8 @@ class CloudTrainingGUI:
         left_col.rowconfigure(2, weight=1)
         control_frame.columnconfigure(0, weight=1)
         
-        ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset).grid(row=0, column=0, pady=3, sticky=(tk.W, tk.E))
+        self.upload_toggle_button = ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset, bootstyle="success")
+        self.upload_toggle_button.grid(row=0, column=0, pady=3, sticky=(tk.W, tk.E))
         ttk.Button(control_frame, text="处理数据集", command=self.process_dataset).grid(row=1, column=0, pady=3, sticky=(tk.W, tk.E))
         ttk.Button(control_frame, text="清理云端数据", command=self.clean_cloud_data, bootstyle="danger").grid(row=2, column=0, pady=3, sticky=(tk.W, tk.E))
         ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success").grid(row=3, column=0, pady=3, sticky=(tk.W, tk.E))
@@ -648,6 +651,7 @@ class CloudTrainingGUI:
         
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
+        self._bind_persistence()
     
     # 移除或注释掉无用的状态栏相关代码
     # def setup_status_bar(self, parent):
@@ -716,6 +720,75 @@ class CloudTrainingGUI:
             self.log_message("配置已保存")
         except Exception as e:
             self.log_message(f"保存配置失败: {e}")
+    
+    def _bind_text_persistence(self, widget, section, key):
+        def on_modified(event):
+            try:
+                widget.edit_modified(False)
+                text = widget.get('1.0', 'end').strip()
+                if section == 'dataset' and key == 'classes':
+                    lines = [x.strip() for x in text.replace(',', '\n').splitlines() if x.strip()]
+                    self.save_config({'dataset': {'classes': lines, 'num_classes': len(lines)}})
+                else:
+                    self.save_config({section: {key: text}})
+            except:
+                pass
+        widget.bind('<<Modified>>', on_modified)
+    
+    def _bind_persistence(self):
+        def bind(var, section, key, t='str'):
+            def cb(*_):
+                try:
+                    val = var.get()
+                    if t == 'int':
+                        val = int(str(val).strip() or '0')
+                    elif t == 'float':
+                        val = float(str(val).strip() or '0')
+                    else:
+                        val = str(val).strip()
+                    self.save_config({section: {key: val}})
+                except:
+                    pass
+            try:
+                var.trace_add('write', cb)
+            except:
+                try:
+                    var.trace('w', cb)
+                except:
+                    pass
+        
+        if hasattr(self, 'hostname_var'):
+            bind(self.hostname_var, 'server', 'hostname')
+        if hasattr(self, 'port_var'):
+            bind(self.port_var, 'server', 'port', 'int')
+        if hasattr(self, 'username_var'):
+            bind(self.username_var, 'server', 'username')
+        if hasattr(self, 'password_var'):
+            bind(self.password_var, 'server', 'password')
+        if hasattr(self, 'key_file_var'):
+            bind(self.key_file_var, 'server', 'key_file')
+        
+        if hasattr(self, 'local_path_var'):
+            bind(self.local_path_var, 'dataset', 'local_path')
+        if hasattr(self, 'remote_path_var'):
+            bind(self.remote_path_var, 'dataset', 'remote_path')
+        if hasattr(self, 'dataset_name_var'):
+            bind(self.dataset_name_var, 'dataset', 'dataset_name')
+        if hasattr(self, 'num_classes_var'):
+            bind(self.num_classes_var, 'dataset', 'num_classes', 'int')
+        if hasattr(self, 'classes_text'):
+            self._bind_text_persistence(self.classes_text, 'dataset', 'classes')
+        
+        if hasattr(self, 'epochs_var'):
+            bind(self.epochs_var, 'training', 'epochs', 'int')
+        if hasattr(self, 'batch_size_var'):
+            bind(self.batch_size_var, 'training', 'batch_size', 'int')
+        if hasattr(self, 'learning_rate_var'):
+            bind(self.learning_rate_var, 'training', 'learning_rate', 'float')
+        if hasattr(self, 'image_size_var'):
+            bind(self.image_size_var, 'training', 'image_size', 'int')
+        if hasattr(self, 'base_model_var'):
+            bind(self.base_model_var, 'training', 'base_model')
     
     def select_key_file(self):
         """选择密钥文件"""
@@ -849,51 +922,141 @@ class CloudTrainingGUI:
         messagebox.showinfo("成功", "所有配置已保存")
     
     def get_server_info(self):
-        """获取服务器详细信息"""
+        """打开服务器文件管理器"""
+        self.open_server_file_explorer()
+    
+    def open_server_file_explorer(self):
+        if not self.is_connected:
+            messagebox.showerror("错误", "请先测试服务器连接")
+            return
         try:
             self.update_server_config()
-            
-            # 创建进度窗口
-            progress_window = tk.Toplevel(self.root)
-            progress_window.title("获取服务器信息")
-            progress_window.geometry("400x150")
-            progress_window.transient(self.root)
-            progress_window.grab_set()
-            
-            # 居中显示
-            progress_window.geometry("+%d+%d" % (
-                self.root.winfo_rootx() + 50,
-                self.root.winfo_rooty() + 50
-            ))
-            
-            # 进度标签
-            progress_label = ttk.Label(progress_window, text="正在连接服务器...")
-            progress_label.pack(pady=20)
-            
-            # 进度条
-            progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
-            progress_bar.pack(pady=10, padx=20, fill='x')
-            progress_bar.start()
-            
-            # 取消按钮
-            cancel_button = ttk.Button(progress_window, text="取消", 
-                                     command=progress_window.destroy)
-            cancel_button.pack(pady=10)
-            
-            # 在新线程中执行信息获取
-            def get_info_thread():
+            win = tk.Toplevel(self.root)
+            win.title("服务器文件管理器")
+            win.geometry("950x620")
+            win.transient(self.root)
+
+            top = ttk.Frame(win, padding="8")
+            top.pack(fill='x')
+            current_path_var = tk.StringVar(value="/root")
+            ttk.Label(top, text="当前路径:").pack(side='left')
+            ttk.Entry(top, textvariable=current_path_var).pack(side='left', fill='x', expand=True, padx=6)
+
+            tree_frame = ttk.Frame(win, padding=(8, 0, 8, 8))
+            tree_frame.pack(fill='both', expand=True)
+            columns = ('type', 'size', 'permissions', 'date')
+            file_tree = ttk.Treeview(tree_frame, columns=columns, show='tree headings')
+            file_tree.heading('#0', text='名称')
+            file_tree.heading('type', text='类型')
+            file_tree.heading('size', text='大小')
+            file_tree.heading('permissions', text='权限')
+            file_tree.heading('date', text='修改时间')
+            file_tree.column('#0', width=320)
+            file_tree.column('type', width=80, anchor='center')
+            file_tree.column('size', width=100, anchor='e')
+            file_tree.column('permissions', width=120, anchor='center')
+            file_tree.column('date', width=150, anchor='center')
+            tree_scrollbar = ttk.Scrollbar(tree_frame, orient='vertical', command=file_tree.yview)
+            file_tree.configure(yscrollcommand=tree_scrollbar.set)
+            file_tree.pack(side='left', fill='both', expand=True)
+            tree_scrollbar.pack(side='right', fill='y')
+
+            nav = ttk.Frame(win, padding=(8, 0, 8, 8))
+            nav.pack(fill='x')
+
+            def format_size(size_str):
                 try:
-                    server_info = self.collect_server_information()
-                    progress_window.after(0, lambda: self.show_server_info_window(server_info, progress_window))
+                    size = int(size_str)
+                    if size < 1024:
+                        return f"{size} B"
+                    if size < 1024 * 1024:
+                        return f"{size / 1024:.1f} KB"
+                    if size < 1024 * 1024 * 1024:
+                        return f"{size / (1024 * 1024):.1f} MB"
+                    return f"{size / (1024 * 1024 * 1024):.1f} GB"
                 except Exception as e:
-                    progress_window.after(0, lambda: self.handle_server_info_error(str(e), progress_window))
-            
-            import threading
-            thread = threading.Thread(target=get_info_thread, daemon=True)
-            thread.start()
-            
+                    return size_str
+
+            def load_directory(path):
+                try:
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    connect_params = {
+                        'hostname': self.server_config['hostname'],
+                        'port': self.server_config['port'],
+                        'username': self.server_config['username']
+                    }
+                    if self.server_config['key_file']:
+                        connect_params['key_filename'] = self.server_config['key_file']
+                    else:
+                        connect_params['password'] = self.server_config['password']
+                    ssh.connect(**connect_params)
+                    stdin, stdout, stderr = ssh.exec_command(f'ls -la "{path}"')
+                    output = stdout.read().decode('utf-8', errors='ignore')
+                    err = stderr.read().decode('utf-8', errors='ignore')
+                    ssh.close()
+                    if err and not output:
+                        messagebox.showerror("错误", f"读取目录失败: {err}")
+                        return
+                    for item in file_tree.get_children():
+                        file_tree.delete(item)
+                    current_path_var.set(path)
+                    lines = output.strip().split('\n')
+                    if lines and lines[0].startswith('total'):
+                        lines = lines[1:]
+                    if path not in ["/", "/root"]:
+                        file_tree.insert('', 'end', text="..", values=("目录", "", "", ""))
+                    import re
+                    for line in lines:
+                        m = re.match(r'^(\S+)\s+\d+\s+\S+\s+\S+\s+(\d+)\s+(\S+\s+\d+\s+\S+)\s+(.+)$', line)
+                        if not m:
+                            continue
+                        permissions = m.group(1)
+                        size = m.group(2)
+                        date = m.group(3)
+                        name = m.group(4)
+                        if name in ['.', '..']:
+                            continue
+                        file_type = "目录" if permissions.startswith('d') else "文件"
+                        file_tree.insert('', 'end', text=name, values=(file_type, format_size(size), permissions, date))
+                except Exception as e:
+                    messagebox.showerror("错误", f"加载目录失败: {str(e)}")
+
+            def navigate_up():
+                cur = current_path_var.get().strip() or "/root"
+                if cur in ["/", "/root"]:
+                    load_directory("/root")
+                    return
+                parent = os.path.dirname(cur.rstrip('/')) or "/root"
+                load_directory(parent)
+
+            def open_path():
+                p = current_path_var.get().strip() or "/root"
+                load_directory(p)
+
+            def on_double_click(event):
+                item = file_tree.identify_row(event.y)
+                if not item:
+                    return
+                name = file_tree.item(item, 'text')
+                ftype = file_tree.set(item, 'type')
+                if name == "..":
+                    navigate_up()
+                    return
+                if ftype == "目录":
+                    cur = current_path_var.get().rstrip('/')
+                    if not cur:
+                        cur = "/root"
+                    nxt = f"{cur}/{name}".replace('//', '/')
+                    load_directory(nxt)
+
+            file_tree.bind('<Double-1>', on_double_click)
+            ttk.Button(nav, text="上级目录", command=navigate_up).pack(side='left')
+            ttk.Button(nav, text="打开路径", command=open_path).pack(side='left', padx=6)
+            ttk.Button(nav, text="刷新", command=lambda: load_directory(current_path_var.get())).pack(side='left')
+            load_directory("/root")
         except Exception as e:
-            messagebox.showerror("错误", f"获取服务器信息失败: {str(e)}")
+            messagebox.showerror("错误", f"打开文件管理器失败: {str(e)}")
     
     def collect_server_information(self):
         """收集服务器详细信息"""
@@ -2507,6 +2670,77 @@ echo "云端目录结构修复完成!"
                 ssh.close()
             # 不抛出异常，允许本地修正继续进行
     
+    def normalize_remote_dataset_yaml(self, ssh, python_cmd):
+        """在训练前强制校正云端dataset.yaml路径，避免指向/root/datasets等错误目录"""
+        remote_path = self.dataset_config.get('remote_path', '').replace('\\', '/').rstrip('/')
+        if not remote_path:
+            remote_path = '/root/yolo_dataset'
+        remote_path = remote_path.rstrip('/')
+        cmd = f"""cd /root && {python_cmd} - <<'PY'
+import os
+import json
+import yaml
+
+remote_path = {repr(remote_path)}
+yaml_file = os.path.join(remote_path, 'dataset.yaml')
+result = {{"ok": False, "msg": "", "yaml_file": yaml_file}}
+
+if not os.path.exists(yaml_file):
+    result["msg"] = "dataset.yaml不存在"
+    print(json.dumps(result, ensure_ascii=False))
+    raise SystemExit(0)
+
+with open(yaml_file, 'r', encoding='utf-8') as f:
+    data = yaml.safe_load(f) or {{}}
+if not isinstance(data, dict):
+    data = {{}}
+
+def first_existing(candidates):
+    for rel in candidates:
+        if os.path.isdir(os.path.join(remote_path, rel)):
+            return rel
+    return None
+
+train_rel = first_existing(['train/images']) or 'train/images'
+val_rel = first_existing(['val/images', 'valid/images']) or 'val/images'
+test_rel = first_existing(['test/images'])
+
+data['path'] = remote_path
+data['train'] = train_rel
+data['val'] = val_rel
+if test_rel:
+    data['test'] = test_rel
+
+if 'names' in data and 'nc' not in data:
+    if isinstance(data['names'], list):
+        data['nc'] = len(data['names'])
+    elif isinstance(data['names'], dict):
+        data['nc'] = len(data['names'])
+
+with open(yaml_file, 'w', encoding='utf-8') as f:
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+result["ok"] = True
+result["msg"] = "dataset.yaml已校正"
+result["path"] = data.get("path")
+result["train"] = data.get("train")
+result["val"] = data.get("val")
+result["test"] = data.get("test")
+print(json.dumps(result, ensure_ascii=False))
+PY"""
+        stdin, stdout, stderr = ssh.exec_command(cmd)
+        out = stdout.read().decode('utf-8', errors='ignore').strip()
+        err = stderr.read().decode('utf-8', errors='ignore').strip()
+        if err:
+            self.root.after(0, lambda e=err: self.log_message(f"⚠ 远程dataset.yaml校正警告: {e[:260]}"))
+        if out:
+            self.root.after(0, lambda o=out: self.log_message(f"dataset.yaml校正结果: {o}"))
+        try:
+            obj = json.loads(out.splitlines()[-1]) if out else {}
+            return bool(obj.get('ok'))
+        except Exception:
+            return False
+    
     def generate_training_script(self):
         """生成训练脚本"""
         try:
@@ -2558,6 +2792,7 @@ echo "云端目录结构修复完成!"
 
 import os
 import sys
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 import torch
 import yaml
 from ultralytics import YOLO
@@ -2581,6 +2816,9 @@ def main():
         
         # 检查并下载YOLO模型
         model_name = "{base_model}"
+        if model_name.startswith("yolov11"):
+            logger.warning(f"当前环境中的Ultralytics版本较旧，模型 {{model_name}} 可能不可用，自动回退为 yolov8s.pt")
+            model_name = "yolov8s.pt"
         logger.info(f"准备加载模型: {{model_name}}")
         
         def download_model_with_retry(model_name, max_retries=3):
@@ -2633,7 +2871,7 @@ def main():
             logger.info("尝试使用备用方案...")
             
             # 备用方案：尝试使用其他可用的模型
-            backup_models = ["yolov8s.pt", "yolov8n.pt", "yolov11s.pt", "yolov11n.pt"]
+            backup_models = ["yolov8s.pt", "yolov8n.pt", "yolov8m.pt", "yolov8l.pt"]
             model = None
             
             for backup_model in backup_models:
@@ -2734,6 +2972,8 @@ if __name__ == "__main__":
         remote_dir = os.path.dirname(remote_file).replace("\\", "/")
         
         for attempt in range(1, retry_times + 1):
+            if self.upload_cancel_event.is_set():
+                return 'cancel'
             ssh = None
             try:
                 # 1. 独立建立SSH连接
@@ -2758,6 +2998,8 @@ if __name__ == "__main__":
                         pass # 远程文件不存在，继续上传流程
                     
                     # 3. 使用 sftp.put 替代 scp，更加稳定且避免 No such file or directory 错误
+                    if self.upload_cancel_event.is_set():
+                        return 'cancel'
                     sftp.put(local_file, remote_file)
                     
                 return 'ok'
@@ -2773,8 +3015,23 @@ if __name__ == "__main__":
                     
         return 'fail:unknown'
 
+    def _set_upload_button_state(self, uploading):
+        if not hasattr(self, 'upload_toggle_button'):
+            return
+        if uploading:
+            self.upload_toggle_button.configure(text="停止上传", bootstyle="danger")
+        else:
+            self.upload_toggle_button.configure(text="上传数据集", bootstyle="success")
+
     def upload_dataset(self):
         """并发+断点续传上传数据集到云端"""
+        if self.upload_in_progress:
+            self.upload_cancel_event.set()
+            if hasattr(self, 'upload_status_var'):
+                self.upload_status_var.set("正在停止上传...")
+            self.log_message("已请求停止上传，正在等待当前任务收尾...")
+            return
+
         if not self.is_connected:
             messagebox.showerror("错误", "请先测试服务器连接")
             return
@@ -2786,7 +3043,12 @@ if __name__ == "__main__":
         if not hasattr(self, 'upload_progress_var'):
             self.upload_progress_var = tk.DoubleVar()
 
+        self.upload_in_progress = True
+        self.upload_cancel_event.clear()
+        self._set_upload_button_state(True)
+
         def upload_thread():
+            canceled = False
             try:
                 # 读取并发度与重试次数 (降低并发度防止触发SSH连接限制)
                 max_workers = self.config.get('upload', {}).get('max_workers', 4)
@@ -2825,13 +3087,21 @@ if __name__ == "__main__":
                 # 扫描全部文件
                 all_files = []
                 for root, _, files in os.walk(local_path):
+                    if self.upload_cancel_event.is_set():
+                        canceled = True
+                        break
                     for f in files:
+                        if self.upload_cancel_event.is_set():
+                            canceled = True
+                            break
                         local_file = os.path.join(root, f)
                         # 使用 os.path.relpath 计算相对路径，然后强制转换为 Unix 风格的正斜杠
                         rel_path   = os.path.relpath(local_file, local_path).replace('\\', '/')
                         # 确保组合后的路径也是纯正斜杠
                         remote_file = f"{remote_path}/{rel_path}"
                         all_files.append((local_file, remote_file))
+                    if canceled:
+                        break
                 total = len(all_files)
                 self.root.after(0, lambda: self.upload_status_var.set(f"共 {total} 个文件，加载断点..."))
 
@@ -2859,10 +3129,18 @@ if __name__ == "__main__":
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     future_map = {}
                     for local_file, remote_file in todo:
+                        if self.upload_cancel_event.is_set():
+                            canceled = True
+                            break
                         fut = pool.submit(self._upload_worker, connect_params, local_file, remote_file, retry_times)
                         future_map[fut] = local_file
 
                     for fut in as_completed(future_map):
+                        if self.upload_cancel_event.is_set():
+                            canceled = True
+                            for pending in future_map:
+                                pending.cancel()
+                            break
                         local_file = future_map[fut]
                         res = fut.result()
                         done[local_file] = res
@@ -2872,6 +3150,8 @@ if __name__ == "__main__":
                         elif res == 'skip':
                             with lock:
                                 skip_count += 1
+                        elif res == 'cancel':
+                            canceled = True
                         elif res.startswith('fail'):
                             with lock:
                                 fail_list.append((local_file, res))
@@ -2881,20 +3161,27 @@ if __name__ == "__main__":
 
                 ssh.close()
                 # 删除断点文件
-                if os.path.exists(ckpt_path):
+                if (not canceled) and (not self.upload_cancel_event.is_set()) and os.path.exists(ckpt_path):
                     os.remove(ckpt_path)
 
-                # 总结弹窗
-                self.root.after(0, lambda: messagebox.showinfo(
-                    "上传完成",
-                    f"总计 {total}\n成功 {ok_count}\n跳过 {skip_count}\n失败 {len(fail_list)}"))
-                self.root.after(0, lambda: self.upload_status_var.set("上传完成"))
-                self.root.after(0, lambda: self.log_message("数据集上传完成"))
+                if canceled or self.upload_cancel_event.is_set():
+                    self.root.after(0, lambda: self.upload_status_var.set("上传已停止，可再次点击继续断点续传"))
+                    self.root.after(0, lambda: self.log_message("上传已停止，断点已保留"))
+                else:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "上传完成",
+                        f"总计 {total}\n成功 {ok_count}\n跳过 {skip_count}\n失败 {len(fail_list)}"))
+                    self.root.after(0, lambda: self.upload_status_var.set("上传完成"))
+                    self.root.after(0, lambda: self.log_message("数据集上传完成"))
 
             except Exception as e:
                 err = str(e)
                 self.root.after(0, lambda err=err: self.upload_status_var.set(f"上传失败: {err}"))
                 self.root.after(0, lambda err=err: self.log_message(f"数据集上传失败: {err}"))
+            finally:
+                self.upload_in_progress = False
+                self.upload_cancel_event.clear()
+                self.root.after(0, lambda: self._set_upload_button_state(False))
 
         threading.Thread(target=upload_thread, daemon=True).start()
     
@@ -3141,6 +3428,14 @@ else:
                 if not python_cmd:
                     self.root.after(0, lambda: self.log_message("✗ 未找到可用的Python命令"))
                     self.root.after(0, lambda: self.training_status_var.set("训练失败: 未找到Python"))
+                    return
+                
+                # 训练前强制校正远程dataset.yaml，避免路径误指向/root/datasets
+                self.root.after(0, lambda: self.log_message("校正云端dataset.yaml路径..."))
+                yaml_fixed = self.normalize_remote_dataset_yaml(ssh, python_cmd)
+                if not yaml_fixed:
+                    self.root.after(0, lambda: self.log_message("✗ 云端dataset.yaml校正失败，请先检查数据集上传是否完整"))
+                    self.root.after(0, lambda: self.training_status_var.set("训练失败: dataset.yaml异常"))
                     return
                 
                 # 检查必要的包
@@ -3731,42 +4026,42 @@ else:
                     # 重新检查所有包
                     final_missing = []
                     final_available = []
+                    final_missing_details = {}
                     
                     for package_name, import_cmd in pip_packages.items():
-                        # 使用转义的命令格式避免语法错误
                         escaped_cmd = import_cmd.replace('"', '\\"')
                         stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "{escaped_cmd}"')
-                        package_info = stdout.read().decode('utf-8')
-                        package_errors = stderr.read().decode('utf-8')
+                        verify_out = stdout.read().decode('utf-8').strip()
+                        verify_err = stderr.read().decode('utf-8').strip()
                         
-                        if package_errors and 'ModuleNotFoundError' in package_errors:
+                        if verify_err and ('ModuleNotFoundError' in verify_err or 'ImportError' in verify_err):
                             final_missing.append(package_name)
-                        elif package_info:
-                            final_available.append(package_info.strip())
+                            final_missing_details[package_name] = verify_err
+                        elif verify_out:
+                            final_available.append(verify_out)
                     
                     if final_available:
                         self.root.after(0, lambda: self.log_message("✓ 最终已安装的包:"))
                         for pkg_info in final_available:
                             self.root.after(0, lambda info=pkg_info: self.log_message(f"  - {info}"))
                     
-                    # 设置检查结果变量
                     package_info = '\n'.join(final_available) if final_available else ''
-                    package_errors = f"仍然缺失的包: {', '.join(final_missing)}" if final_missing else ''
+                    package_errors = ''
                 
                 if package_info:
                     self.root.after(0, lambda: self.log_message(f"✓ 包检查成功: {package_info.strip()}"))
-                if package_errors:
-                    if 'ModuleNotFoundError' in package_errors:
-                        self.root.after(0, lambda: self.log_message(f"✗ 包安装失败，无法继续训练: {package_errors.strip()}"))
-                        self.root.after(0, lambda: self.log_message("🔧 建议的解决方案:"))
-                        self.root.after(0, lambda: self.log_message("  1. 使用'本地安装包'按钮上传预下载的.whl文件"))
-                        self.root.after(0, lambda: self.log_message("  2. 检查服务器网络连接是否正常"))
-                        self.root.after(0, lambda: self.log_message("  3. 尝试使用不同的pip镜像源"))
-                        self.root.after(0, lambda: self.log_message("  4. 检查服务器磁盘空间是否充足"))
-                        self.root.after(0, lambda: self.training_status_var.set("训练失败: 缺少必要的Python包"))
-                        return
-                    else:
-                        self.root.after(0, lambda: self.log_message(f"⚠ 包检查警告: {package_errors.strip()}"))
+                if 'final_missing' in locals() and final_missing:
+                    self.root.after(0, lambda m=', '.join(final_missing): self.log_message(f"✗ 包安装失败，无法继续训练，仍缺失: {m}"))
+                    for k, v in final_missing_details.items():
+                        self.root.after(0, lambda p=k, e=v: self.log_message(f"  - {p} 导入错误: {e[:260]}"))
+                    self.root.after(0, lambda: self.log_message("🔧 建议的解决方案:"))
+                    self.root.after(0, lambda: self.log_message("  1. 点击'本地安装包'上传对应whl（优先 matplotlib/opencv/ultralytics）"))
+                    self.root.after(0, lambda: self.log_message("  2. 确认当前训练使用同一个Python解释器与pip"))
+                    self.root.after(0, lambda: self.log_message("  3. 先执行一次清理缓存后重装: python -m pip cache purge"))
+                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 缺少必要的Python包"))
+                    return
+                elif package_errors:
+                    self.root.after(0, lambda: self.log_message(f"⚠ 包检查警告: {package_errors.strip()}"))
                 
                 # 使用nohup在后台执行训练脚本，并将输出重定向到日志文件
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3823,15 +4118,8 @@ else:
                     else:
                         self.root.after(0, lambda: self.log_message('✓ 检测到CUDA版PyTorch，无需重复安装'))
                 
-                # 临时禁用系统site-packages，避免使用系统中的NumPy 2.x
-                try:
-                    stdin, stdout, stderr = ssh.exec_command('mv /usr/lib/python3/dist-packages /usr/lib/python3/dist-packages.disabled 2>/dev/null || true')
-                    stdout.channel.recv_exit_status()
-                    stdin, stdout, stderr = ssh.exec_command('mkdir -p /usr/lib/python3/dist-packages || true')
-                    stdout.channel.recv_exit_status()
-                    self.root.after(0, lambda: self.log_message("已禁用系统site-packages，优先使用pip安装的包"))
-                except Exception:
-                    pass
+                # 不再改动系统site-packages目录，避免造成解释器环境不一致
+                self.root.after(0, lambda: self.log_message("保持系统site-packages不变，统一使用当前Python解释器和其pip"))
                 
                 try:
                     stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy; print(numpy.__version__)"')
@@ -3862,13 +4150,16 @@ else:
                 # 2. 设置PYTHONPATH优先使用用户本地路径
                 # 3. 使用-E标志忽略环境变量，但不使用-s标志（-s会禁用用户包）
                 # 4. 移除-I标志，因为它会禁用用户站点包目录
+                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major)+\\".\\"+str(sys.version_info.minor))"')
+                py_mm = stdout.read().decode('utf-8').strip() or '3.10'
                 env_setup = [
                     'export PYTHONNOUSERSITE=0',
+                    'export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1',
                     'export MPLBACKEND=Agg',
                     'export CUDA_VISIBLE_DEVICES=0',
                     'export PYTHONDONTWRITEBYTECODE=1',
                     'unset PYTHONSTARTUP',
-                    'export PYTHONPATH=/usr/local/lib/python3.9/dist-packages:/root/.local/lib/python3.9/site-packages:$PYTHONPATH'
+                    f'export PYTHONPATH=/root/miniforge3/lib/python{py_mm}/site-packages:/root/.local/lib/python{py_mm}/site-packages:$PYTHONPATH'
                 ]
                 env_vars = ' && '.join(env_setup)
                 
@@ -3896,6 +4187,7 @@ else:
                 
                 # 实时读取日志文件并解析训练进度
                 import re
+                ansi = re.compile(r'\x1B\[[0-9;]*[A-Za-z]')
                 log_position = 0
                 total_epochs = None
                 total_steps = None
@@ -3912,33 +4204,51 @@ else:
                         for line in lines:
                             if line.strip():
                                 self.root.after(0, lambda l=line: self.log_message(f"[训练] {l.strip()}"))
+                                clean_line = ansi.sub('', line)
                                 # 解析总epoch
-                                m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', line)
+                                m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', clean_line)
                                 if m_total:
                                     try:
                                         total_epochs = int(m_total.group(1))
                                     except:
                                         pass
+                                if total_epochs is None:
+                                    m_total_args = re.search(r'epochs=(\d+)', clean_line)
+                                    if m_total_args:
+                                        try:
+                                            total_epochs = int(m_total_args.group(1))
+                                        except:
+                                            pass
+                                m_epoch_row = re.search(r'^\s*(\d+)\s*/\s*(\d+)\s+', clean_line)
+                                if m_epoch_row:
+                                    try:
+                                        current_epoch = int(m_epoch_row.group(1))
+                                        if total_epochs is None:
+                                            total_epochs = int(m_epoch_row.group(2))
+                                    except:
+                                        pass
                                 # 解析tqdm进度 例如 "0%| | 0/14"
-                                m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', line)
+                                m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', clean_line)
                                 if m_step:
                                     try:
                                         pct = int(m_step.group(1))
                                         current_step = int(m_step.group(2))
                                         total_steps = int(m_step.group(3))
-                                        status = f"训练中: epoch={current_epoch if current_epoch is not None else '?'}  步骤 {current_step}/{total_steps}  {pct}%"
+                                        if total_epochs and current_epoch:
+                                            overall = int(((current_epoch - 1) + (current_step / max(total_steps, 1))) / max(total_epochs, 1) * 100)
+                                            if overall < 0:
+                                                overall = 0
+                                            if overall > 100:
+                                                overall = 100
+                                            status = f"训练中: {current_epoch}/{total_epochs}  {overall}%"
+                                        else:
+                                            status = f"训练中: {pct}%"
                                         self.root.after(0, lambda s=status: self.training_status_var.set(s))
                                     except:
                                         pass
-                                # 粗略解析当前epoch行（出现Epoch表头时递增）
-                                if 'Epoch' in line and 'GPU_mem' in line:
-                                    if current_epoch is None:
-                                        current_epoch = 0
-                                    else:
-                                        current_epoch += 1
-                                    if total_epochs:
-                                        status = f"训练中: epoch {current_epoch}/{total_epochs}"
-                                        self.root.after(0, lambda s=status: self.training_status_var.set(s))
+                                if total_epochs and current_epoch:
+                                    status = f"训练中: {current_epoch}/{total_epochs}"
+                                    self.root.after(0, lambda s=status: self.training_status_var.set(s))
                         log_position += len(new_content.encode('utf-8'))
                     
                     # 检查训练是否还在运行
@@ -5117,19 +5427,33 @@ else:
                     text = ansi.sub('', content)
                     m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', text)
                     total_epochs = int(m_total.group(1)) if m_total else total_epochs
-                    m_epoch = re.findall(r'^\s*Epoch', text, flags=re.MULTILINE)
-                    current_epoch = len(m_epoch) if m_epoch else current_epoch
+                    if total_epochs is None:
+                        m_total_args = re.search(r'epochs=(\d+)', text)
+                        total_epochs = int(m_total_args.group(1)) if m_total_args else total_epochs
+                    m_epoch_rows = re.findall(r'^\s*(\d+)\s*/\s*(\d+)\s+', text, flags=re.MULTILINE)
+                    if m_epoch_rows:
+                        try:
+                            current_epoch = max(int(x[0]) for x in m_epoch_rows)
+                            if total_epochs is None:
+                                total_epochs = int(m_epoch_rows[-1][1])
+                        except:
+                            pass
                     m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', text)
                     if m_step:
                         pct = int(m_step.group(1))
                         cur = int(m_step.group(2))
                         tot = int(m_step.group(3))
-                        if total_epochs and current_epoch is not None:
-                            status_text = f"训练中: epoch {current_epoch}/{total_epochs}  步骤 {cur}/{tot}  {pct}%"
+                        if total_epochs and current_epoch:
+                            overall = int(((current_epoch - 1) + (cur / max(tot, 1))) / max(total_epochs, 1) * 100)
+                            if overall < 0:
+                                overall = 0
+                            if overall > 100:
+                                overall = 100
+                            status_text = f"训练中: {current_epoch}/{total_epochs}  {overall}%"
                         else:
-                            status_text = f"训练中: 步骤 {cur}/{tot}  {pct}%"
-                    elif total_epochs and current_epoch is not None:
-                        status_text = f"训练中: epoch {current_epoch}/{total_epochs}"
+                            status_text = f"训练中: {pct}%"
+                    elif total_epochs and current_epoch:
+                        status_text = f"训练中: {current_epoch}/{total_epochs}"
             if self.training_run_dir and not self._run_dir_logged:
                 self._run_dir_logged = True
                 self.root.after(0, lambda p=self.training_run_dir: self.log_message(f"训练目录: {p}"))
@@ -5149,9 +5473,9 @@ else:
                         current_epoch = ep
                         if total_ep:
                             total_epochs = total_ep
-                            status_text = f"训练中: epoch {ep}/{total_ep}"
+                            status_text = f"训练中: {ep}/{total_ep}"
                         else:
-                            status_text = f"训练中: epoch {ep}"
+                            status_text = f"训练中: {ep}"
                     except:
                         pass
             epoch_text = None
@@ -5934,8 +6258,9 @@ else:
         self.log_text.insert(tk.END, log_entry)
         self.log_text.see(tk.END)
         
-        # 更新状态栏
-        self.status_var.set(message)
+        # 更新状态栏（兼容已移除状态栏的布局）
+        if hasattr(self, 'status_var'):
+            self.status_var.set(message)
         
         # 记录到日志文件
         self.logger.info(message)

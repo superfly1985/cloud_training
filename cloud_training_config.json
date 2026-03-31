@@ -1,23 +1,24 @@
 {
   "server": {
-    "hostname": "43.153.131.4",
+    "hostname": "43.153.136.135",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
     "key_file": ""
   },
   "dataset": {
-    "local_path": "D:/picture/HCP4/HCP系列黑色小内芯/processed_1024x1024/yolo_dataset",
+    "local_path": "D:/picture/48V主电池/训练照片/检验点2训练/yolo_dataset",
     "remote_path": "/root/yolo_dataset",
     "dataset_name": "yolo_dataset",
     "classes": [
-      "黑色内芯"
+      "目标卡丁",
+      "目标卡丁近景"
     ],
-    "num_classes": 1
+    "num_classes": 2
   },
   "training": {
     "epochs": 300,
-    "batch_size": 20,
+    "batch_size": 30,
     "learning_rate": 0.01,
     "image_size": 640,
     "base_model": "yolov8s.pt"
