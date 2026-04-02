@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import subprocess
+import re
 import paramiko
 from pathlib import Path
 from datetime import datetime
@@ -37,7 +38,7 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.2"
+        self.app_version = "v2.2.4"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -77,6 +78,13 @@ class CloudTrainingGUI:
         self.upload_in_progress = False
         self.upload_progress = 0
         self.upload_cancel_event = threading.Event()
+        self.dataset_check_passed = False
+        self.remote_verify_passed = False
+        self.last_dataset_fingerprint = ""
+        self.last_dataset_check_time = ""
+        self.last_upload_plan = None
+        self._persistence_bound = False
+        self.auto_recommend_running = False
         
         # SSH客户端
         self.ssh_client = None
@@ -85,8 +93,13 @@ class CloudTrainingGUI:
         self.max_data_points = 50  # 最多保存50个数据点
         self.gpu_utilization_data = deque(maxlen=self.max_data_points)
         self.gpu_memory_data = deque(maxlen=self.max_data_points)
-        self.cpu_data = deque(maxlen=self.max_data_points)
-        self.memory_data = deque(maxlen=self.max_data_points)
+        self.loss_box_data = deque(maxlen=self.max_data_points)
+        self.loss_cls_data = deque(maxlen=self.max_data_points)
+        self.loss_dfl_data = deque(maxlen=self.max_data_points)
+        self.loss_epoch_data = deque(maxlen=self.max_data_points)
+        self.last_loss_epoch = -1
+        self._last_training_compact_line = ""
+        self._last_training_log_text = ""
         self.time_data = deque(maxlen=self.max_data_points)
         
         # 监控图表相关
@@ -101,6 +114,7 @@ class CloudTrainingGUI:
         self.debug_monitor = False
         self.training_log_file = None
         self.training_run_dir = None
+        self.training_run_name = None
         self._last_progress_update = 0.0
         self._run_dir_logged = False
         
@@ -117,6 +131,8 @@ class CloudTrainingGUI:
         
         # 设置UI
         self.setup_ui()
+        self.update_action_button_states()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         
         # 设置日志
         self.setup_logging()
@@ -131,6 +147,313 @@ class CloudTrainingGUI:
                 self.upload_progress_bar.update_idletasks()
         except Exception:
             pass
+
+    def update_action_button_states(self):
+        try:
+            upload_enabled = self.upload_in_progress or (self.is_connected and self.dataset_check_passed)
+            train_enabled = (not self.upload_in_progress) and self.is_connected and self.dataset_check_passed and self.remote_verify_passed
+            if hasattr(self, 'upload_toggle_button'):
+                self.upload_toggle_button.configure(state=("normal" if upload_enabled else "disabled"))
+            if hasattr(self, 'start_training_button'):
+                self.start_training_button.configure(state=("normal" if train_enabled else "disabled"))
+        except Exception:
+            pass
+
+    def invalidate_dataset_pipeline(self, reason=None):
+        self.dataset_check_passed = False
+        self.remote_verify_passed = False
+        self.last_dataset_fingerprint = ""
+        self.last_dataset_check_time = ""
+        self.last_upload_plan = None
+        if hasattr(self, 'dataset_check_status_var'):
+            self.dataset_check_status_var.set("检查状态: 未检查")
+        if hasattr(self, 'dataset_summary_var'):
+            self.dataset_summary_var.set("检查总结: 未生成")
+        if reason:
+            self.log_message(reason)
+        self.update_action_button_states()
+
+    def copy_text_to_clipboard(self, text):
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()
+            return True
+        except Exception:
+            return False
+
+    def show_remote_verify_failure(self, msg, bad_text):
+        copy_tip = ""
+        if bad_text:
+            if self.copy_text_to_clipboard(bad_text):
+                copy_tip = "\n定位信息已复制到剪贴板"
+        messagebox.showerror("云端验收失败", f"{msg}{copy_tip}")
+
+    def _model_profile(self, model_name):
+        import re
+        name = str(model_name).lower()
+        match = re.search(r'yolov\d+([a-z])', name)
+        scale = match.group(1) if match else 's'
+        if scale in ['c', 'b']:
+            scale = 'm'
+        if scale == 'e':
+            scale = 'l'
+        if scale not in ['n', 's', 'm', 'l', 'x']:
+            scale = 's'
+        return scale
+
+    def _recommended_training_params(self, model_name, image_size):
+        base_batch_640 = {
+            'n': 32,
+            's': 24,
+            'm': 16,
+            'l': 10,
+            'x': 8
+        }
+        scale = self._model_profile(model_name)
+        try:
+            imgsz = int(image_size)
+        except Exception:
+            imgsz = 640
+        if imgsz <= 0:
+            imgsz = 640
+        factor = (640.0 / float(imgsz)) ** 2
+        rec_batch = int(round(base_batch_640.get(scale, 24) * factor))
+        if rec_batch < 2:
+            rec_batch = 2
+        if rec_batch > 64:
+            rec_batch = 64
+        rec_lr = 0.01 * (rec_batch / 16.0)
+        if rec_lr < 0.002:
+            rec_lr = 0.002
+        if rec_lr > 0.02:
+            rec_lr = 0.02
+        return {
+            'batch_size': rec_batch,
+            'learning_rate': round(rec_lr, 5)
+        }
+
+    def apply_auto_recommended_training_params(self, trigger_key):
+        if self.auto_recommend_running:
+            return
+        if not hasattr(self, 'image_size_var') or not hasattr(self, 'base_model_var'):
+            return
+        try:
+            imgsz_text = str(self.image_size_var.get()).strip()
+            if not imgsz_text:
+                return
+            imgsz = int(imgsz_text)
+        except Exception:
+            return
+
+        rec = self._recommended_training_params(self.base_model_var.get(), imgsz)
+        changed = []
+        self.auto_recommend_running = True
+        try:
+            if hasattr(self, 'batch_size_var'):
+                current_batch = str(self.batch_size_var.get()).strip()
+                next_batch = str(rec['batch_size'])
+                if current_batch != next_batch:
+                    self.batch_size_var.set(next_batch)
+                    changed.append(f"batch={next_batch}")
+            if hasattr(self, 'learning_rate_var'):
+                current_lr = str(self.learning_rate_var.get()).strip()
+                next_lr = f"{rec['learning_rate']:.5f}".rstrip('0').rstrip('.')
+                if current_lr != next_lr:
+                    self.learning_rate_var.set(next_lr)
+                    changed.append(f"lr={next_lr}")
+        finally:
+            self.auto_recommend_running = False
+
+        if changed:
+            msg = f"已按{trigger_key}自动推荐参数: {', '.join(changed)}，可手动修改"
+            if hasattr(self, 'upload_status_var'):
+                self.upload_status_var.set(msg)
+            self.log_message(msg)
+
+    def _normalize_name_list(self, names):
+        if isinstance(names, list):
+            return [str(x) for x in names]
+        if isinstance(names, dict):
+            try:
+                keys = sorted(names.keys(), key=lambda x: int(x))
+            except Exception:
+                keys = sorted(names.keys(), key=lambda x: str(x))
+            return [str(names[k]) for k in keys]
+        return []
+
+    def _build_dataset_fingerprint(self, dataset_path):
+        hasher = hashlib.sha256()
+        for root, _, files in os.walk(dataset_path):
+            for name in sorted(files):
+                lower_name = name.lower()
+                if lower_name.endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.txt', '.yaml', '.yml')):
+                    full = os.path.join(root, name)
+                    rel = os.path.relpath(full, dataset_path).replace('\\', '/')
+                    st = os.stat(full)
+                    hasher.update(f"{rel}|{st.st_size}|{int(st.st_mtime)}".encode('utf-8', errors='ignore'))
+        return hasher.hexdigest()
+
+    def _build_expected_upload_map(self, dataset_path):
+        expected = {}
+        for root, _, files in os.walk(dataset_path):
+            for name in files:
+                local_file = os.path.join(root, name)
+                rel_path = os.path.relpath(local_file, dataset_path).replace('\\', '/')
+                if not self._should_upload_file(rel_path):
+                    continue
+                try:
+                    expected[rel_path] = int(os.path.getsize(local_file))
+                except Exception:
+                    continue
+        return expected
+
+    def _format_bytes(self, size_bytes):
+        try:
+            size = float(size_bytes)
+        except Exception:
+            size = 0.0
+        if size < 1024:
+            return f"{int(size)} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        if size < 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+
+    def quick_compare_remote_dataset(self, dataset_path, remote_path, progress_cb=None):
+        result = {
+            'ok': False,
+            'msg': '',
+            'expected_total': 0,
+            'expected_total_bytes': 0,
+            'remote_total': 0,
+            'need_upload': 0,
+            'skip_count': 0,
+            'need_upload_bytes': 0,
+            'todo_rel_paths': []
+        }
+        try:
+            if callable(progress_cb):
+                progress_cb("云端差异检查: 正在收集本地文件清单...")
+            expected = self._build_expected_upload_map(dataset_path)
+            result['expected_total'] = len(expected)
+            result['expected_total_bytes'] = sum(int(v) for v in expected.values())
+            if not self.is_connected:
+                result['msg'] = "未连接服务器，已跳过云端差异检查"
+                return result
+            if not remote_path:
+                result['msg'] = "远程路径为空，已跳过云端差异检查"
+                return result
+            if callable(progress_cb):
+                progress_cb(f"云端差异检查: 本地可上传文件 {result['expected_total']}，正在读取云端...")
+
+            self.update_server_config()
+            connect_params = {
+                'hostname': self.server_config['hostname'],
+                'port': self.server_config['port'],
+                'username': self.server_config['username']
+            }
+            if self.server_config['key_file']:
+                connect_params['key_filename'] = self.server_config['key_file']
+            elif self.server_config['password']:
+                connect_params['password'] = self.server_config['password']
+
+            remote_script = f"""import os, json
+root = {repr(remote_path)}
+out = {{}}
+if os.path.isdir(root):
+    for base, _, files in os.walk(root):
+        for fn in files:
+            full = os.path.join(base, fn)
+            rel = os.path.relpath(full, root).replace('\\\\', '/')
+            try:
+                out[rel] = int(os.path.getsize(full))
+            except Exception:
+                pass
+print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
+
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                ssh.connect(**connect_params, timeout=15)
+                cmd = "/root/miniforge3/bin/python3 - <<'PY'\n" + remote_script + "\nPY"
+                stdin, stdout, stderr = ssh.exec_command(cmd, timeout=180)
+                out = stdout.read().decode('utf-8', errors='ignore').strip()
+                err = stderr.read().decode('utf-8', errors='ignore').strip()
+                if err:
+                    result['msg'] = err
+                    return result
+                if not out:
+                    result['msg'] = "云端差异检查无输出"
+                    return result
+                last_line = out.splitlines()[-1]
+                obj = json.loads(last_line)
+                remote_files = obj.get('files') if isinstance(obj, dict) else {}
+                if not isinstance(remote_files, dict):
+                    remote_files = {}
+            finally:
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
+
+            todo_rel_paths = []
+            need_upload_bytes = 0
+            for rel_path, local_size in expected.items():
+                if int(remote_files.get(rel_path, -1)) != int(local_size):
+                    todo_rel_paths.append(rel_path)
+                    need_upload_bytes += int(local_size)
+
+            result['ok'] = True
+            result['remote_total'] = len(remote_files)
+            result['need_upload'] = len(todo_rel_paths)
+            result['skip_count'] = len(expected) - len(todo_rel_paths)
+            result['need_upload_bytes'] = need_upload_bytes
+            result['todo_rel_paths'] = sorted(todo_rel_paths)
+            if callable(progress_cb):
+                progress_cb(
+                    f"云端差异检查完成: 需上传 {result['need_upload']}，可跳过 {result['skip_count']}，预计 {self._format_bytes(need_upload_bytes)}"
+                )
+            return result
+        except Exception as e:
+            result['msg'] = str(e)
+            return result
+
+    def _build_check_summary_text(self, result):
+        summary = result.get('summary') or {}
+        splits = summary.get('splits') or {}
+        split_text = " ".join([f"{k}:{v.get('images', 0)}/{v.get('labels', 0)}" for k, v in splits.items()]) or "-"
+        elapsed = float(result.get('check_elapsed_sec', 0) or 0)
+        base_text = (
+            f"本地 images={summary.get('total_images', 0)} labels={summary.get('total_labels', 0)} "
+            f"split[{split_text}] 耗时={elapsed:.1f}s"
+        )
+        remote_diff = result.get('remote_diff') or {}
+        if remote_diff.get('ok'):
+            return (
+                f"{base_text} 云端: 总计{int(remote_diff.get('expected_total', 0))} "
+                f"需上传{int(remote_diff.get('need_upload', 0))} "
+                f"可跳过{int(remote_diff.get('skip_count', 0))} "
+                f"待上传体积{self._format_bytes(remote_diff.get('need_upload_bytes', 0))}"
+            )
+        msg = str(remote_diff.get('msg', '')).strip()
+        if msg:
+            return f"{base_text} 云端差异未完成: {msg}"
+        return base_text
+
+    def _ensure_dataset_check_is_fresh(self):
+        dataset_path = self.local_path_var.get().strip() if hasattr(self, 'local_path_var') else ''
+        if not dataset_path or not os.path.isdir(dataset_path):
+            self.invalidate_dataset_pipeline("数据集路径无效，已清除检查状态")
+            return False
+        if not self.dataset_check_passed or not self.last_dataset_fingerprint:
+            return False
+        current_fp = self._build_dataset_fingerprint(dataset_path)
+        if current_fp != self.last_dataset_fingerprint:
+            self.invalidate_dataset_pipeline("检测到数据集内容变化，请重新检查后再上传/训练")
+            return False
+        return True
 
     def setup_logging(self):
         """设置日志系统"""
@@ -166,6 +489,7 @@ class CloudTrainingGUI:
         main_frame.rowconfigure(0, weight=1)
 
         self.setup_dataset_tab()
+        self._bind_persistence()
         
         # 状态栏 (由于已有日志输出，不再显示)
         # self.setup_status_bar(main_frame)
@@ -366,9 +690,11 @@ class CloudTrainingGUI:
         
         self.upload_toggle_button = ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset, bootstyle="success")
         self.upload_toggle_button.grid(row=0, column=0, pady=3, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="处理数据集", command=self.process_dataset).grid(row=1, column=0, pady=3, sticky=(tk.W, tk.E))
+        self.process_dataset_button = ttk.Button(control_frame, text="检查数据集", command=self.process_dataset)
+        self.process_dataset_button.grid(row=1, column=0, pady=3, sticky=(tk.W, tk.E))
         ttk.Button(control_frame, text="清理云端数据", command=self.clean_cloud_data, bootstyle="danger").grid(row=2, column=0, pady=3, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success").grid(row=3, column=0, pady=3, sticky=(tk.W, tk.E))
+        self.start_training_button = ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success")
+        self.start_training_button.grid(row=3, column=0, pady=3, sticky=(tk.W, tk.E))
         ttk.Button(control_frame, text="停止训练", command=self.stop_training, bootstyle="danger").grid(row=4, column=0, pady=3, sticky=(tk.W, tk.E))
 
         # ==================== 右侧列 (Right Column) ====================
@@ -454,13 +780,17 @@ class CloudTrainingGUI:
         right_col.rowconfigure(4, weight=1) # 让它占据剩余空间
         
         self.upload_status_var = tk.StringVar(value="准备就绪")
+        self.dataset_check_status_var = tk.StringVar(value="检查状态: 未检查")
+        self.dataset_summary_var = tk.StringVar(value="检查总结: 未生成")
         self.upload_progress_var = tk.DoubleVar()
         
         ttk.Label(status_info_frame, text="操作进度提示:", font=("Arial", 10, "bold")).grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
         ttk.Label(status_info_frame, textvariable=self.upload_status_var, wraplength=400).grid(row=1, column=0, sticky=(tk.W, tk.E), pady=2)
+        ttk.Label(status_info_frame, textvariable=self.dataset_check_status_var, wraplength=400).grid(row=2, column=0, sticky=(tk.W, tk.E), pady=2)
+        ttk.Label(status_info_frame, textvariable=self.dataset_summary_var, wraplength=400).grid(row=3, column=0, sticky=(tk.W, tk.E), pady=2)
         
         self.upload_progress_bar = ttk.Progressbar(status_info_frame, variable=self.upload_progress_var, maximum=100)
-        self.upload_progress_bar.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=5)
+        self.upload_progress_bar.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=5)
 
         # ==================== 底部区域 (Bottom Area) ====================
         # (上传进度已移至上方控制区，此处只保留系统监控和日志)
@@ -483,17 +813,14 @@ class CloudTrainingGUI:
         self.gpu_memory_frame = ttk.Labelframe(monitor_frame, text="GPU显存使用率", padding="3")
         self.gpu_memory_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(3, 0))
 
-        self.cpu_frame = ttk.Labelframe(monitor_frame, text="CPU使用率", padding="3")
-        self.cpu_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 3))
-
-        self.memory_frame = ttk.Labelframe(monitor_frame, text="内存使用率", padding="3")
-        self.memory_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(3, 0))
+        self.loss_frame = ttk.Labelframe(monitor_frame, text="Loss曲线", padding="3")
+        self.loss_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 0))
 
         self.init_monitoring_charts()
 
         log_frame = ttk.Labelframe(monitor_log_frame, text="训练日志", padding="10")
         log_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=60)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=60, font=('Consolas', 10))
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
@@ -616,28 +943,21 @@ class CloudTrainingGUI:
         monitor_frame = ttk.Labelframe(main_content_frame, text="系统监控", padding="5")
         monitor_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
         
-        # 配置监控区域网格：4行1列，竖向排列
         monitor_frame.columnconfigure(0, weight=1)
+        monitor_frame.columnconfigure(1, weight=1)
         monitor_frame.rowconfigure(0, weight=1)
         monitor_frame.rowconfigure(1, weight=1)
-        monitor_frame.rowconfigure(2, weight=1)
-        monitor_frame.rowconfigure(3, weight=1)
         
         # GPU利用率监控
         self.gpu_utilization_frame = ttk.Labelframe(monitor_frame, text="GPU利用率", padding="3")
-        self.gpu_utilization_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3))
+        self.gpu_utilization_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(0, 3))
         
         # GPU显存监控
         self.gpu_memory_frame = ttk.Labelframe(monitor_frame, text="GPU显存使用率", padding="3")
-        self.gpu_memory_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 3))
+        self.gpu_memory_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(3, 0))
         
-        # CPU使用率监控
-        self.cpu_frame = ttk.Labelframe(monitor_frame, text="CPU使用率", padding="3")
-        self.cpu_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 3))
-        
-        # 内存使用率监控
-        self.memory_frame = ttk.Labelframe(monitor_frame, text="内存使用率", padding="3")
-        self.memory_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0))
+        self.loss_frame = ttk.Labelframe(monitor_frame, text="Loss曲线", padding="3")
+        self.loss_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 0))
         
         # 初始化监控图表占位符
         self.init_monitoring_charts()
@@ -646,7 +966,7 @@ class CloudTrainingGUI:
         log_frame = ttk.Labelframe(main_content_frame, text="训练日志", padding="10")
         log_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=25, width=60)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=25, width=60, font=('Consolas', 10))
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         log_frame.columnconfigure(0, weight=1)
@@ -736,6 +1056,10 @@ class CloudTrainingGUI:
         widget.bind('<<Modified>>', on_modified)
     
     def _bind_persistence(self):
+        if self._persistence_bound:
+            return
+        self._persistence_bound = True
+
         def bind(var, section, key, t='str'):
             def cb(*_):
                 try:
@@ -770,8 +1094,32 @@ class CloudTrainingGUI:
         
         if hasattr(self, 'local_path_var'):
             bind(self.local_path_var, 'dataset', 'local_path')
+            def _local_path_changed(*_):
+                self.dataset_check_passed = False
+                self.remote_verify_passed = False
+                self.last_dataset_fingerprint = ""
+                self.last_dataset_check_time = ""
+                self.update_action_button_states()
+            try:
+                self.local_path_var.trace_add('write', _local_path_changed)
+            except Exception:
+                try:
+                    self.local_path_var.trace('w', _local_path_changed)
+                except Exception:
+                    pass
         if hasattr(self, 'remote_path_var'):
             bind(self.remote_path_var, 'dataset', 'remote_path')
+            def _remote_path_changed(*_):
+                self.remote_verify_passed = False
+                self.last_upload_plan = None
+                self.update_action_button_states()
+            try:
+                self.remote_path_var.trace_add('write', _remote_path_changed)
+            except Exception:
+                try:
+                    self.remote_path_var.trace('w', _remote_path_changed)
+                except Exception:
+                    pass
         if hasattr(self, 'dataset_name_var'):
             bind(self.dataset_name_var, 'dataset', 'dataset_name')
         if hasattr(self, 'num_classes_var'):
@@ -787,8 +1135,34 @@ class CloudTrainingGUI:
             bind(self.learning_rate_var, 'training', 'learning_rate', 'float')
         if hasattr(self, 'image_size_var'):
             bind(self.image_size_var, 'training', 'image_size', 'int')
+            def _image_size_changed(*_):
+                self.apply_auto_recommended_training_params("分辨率")
+            try:
+                self.image_size_var.trace_add('write', _image_size_changed)
+            except Exception:
+                try:
+                    self.image_size_var.trace('w', _image_size_changed)
+                except Exception:
+                    pass
         if hasattr(self, 'base_model_var'):
             bind(self.base_model_var, 'training', 'base_model')
+            def _base_model_changed(*_):
+                self.apply_auto_recommended_training_params("基础模型")
+            try:
+                self.base_model_var.trace_add('write', _base_model_changed)
+            except Exception:
+                try:
+                    self.base_model_var.trace('w', _base_model_changed)
+                except Exception:
+                    pass
+
+    def _on_app_close(self):
+        try:
+            self.update_all_configs()
+            self.save_config()
+        except Exception:
+            pass
+        self.root.destroy()
     
     def select_key_file(self):
         """选择密钥文件"""
@@ -805,7 +1179,7 @@ class CloudTrainingGUI:
         if path:
             self.local_path_var.set(path)
             self.dataset_config['local_path'] = path
-            # 自动分析数据集
+            self.invalidate_dataset_pipeline("数据集路径已变更，请重新检查后再上传")
             self.analyze_dataset()
     
     def test_connection(self):
@@ -874,6 +1248,7 @@ class CloudTrainingGUI:
         self.connection_status_label.config(foreground="green")
         self.log_message("服务器连接测试成功")
         self.start_system_monitoring()
+        self.update_action_button_states()
     
     def connection_test_failed(self, error):
         """连接测试失败"""
@@ -881,15 +1256,18 @@ class CloudTrainingGUI:
         self.connection_status_var.set(f"连接失败: {error}")
         self.connection_status_label.config(foreground="red")
         self.log_message(f"服务器连接测试失败: {error}")
+        self.update_action_button_states()
     
-    def update_all_configs(self):
+    def update_all_configs(self, collect_errors=False):
         """统一从界面读取最新的所有配置并保存"""
+        errors = []
         # 1. 更新服务器配置
         self.server_config['hostname'] = self.hostname_var.get().strip()
         try:
             self.server_config['port'] = int(self.port_var.get().strip())
         except ValueError:
-            pass
+            if collect_errors:
+                errors.append("服务器端口必须是整数")
         self.server_config['username'] = self.username_var.get().strip()
         self.server_config['password'] = self.password_var.get()
         self.server_config['key_file'] = self.key_file_var.get().strip()
@@ -900,16 +1278,30 @@ class CloudTrainingGUI:
         self.dataset_config['dataset_name'] = self.dataset_name_var.get().strip()
         # num_classes 是自动读取的，不需要手动更新回去
 
-        # 3. 更新训练参数配置
+        # 3. 更新训练参数配置（逐项更新，单项失败不影响其它项）
         try:
             self.training_config['epochs'] = int(self.epochs_var.get().strip())
+        except ValueError:
+            if collect_errors:
+                errors.append("训练轮次必须是整数")
+        try:
             self.training_config['batch_size'] = int(self.batch_size_var.get().strip())
+        except ValueError:
+            if collect_errors:
+                errors.append("批次大小必须是整数")
+        try:
             self.training_config['learning_rate'] = float(self.learning_rate_var.get().strip())
+        except ValueError:
+            if collect_errors:
+                errors.append("学习率必须是数字")
+        try:
             self.training_config['image_size'] = int(self.image_size_var.get().strip())
         except ValueError:
-            pass # 如果有非数字输入，暂时忽略（实际运行时会有其他校验）
-            
+            if collect_errors:
+                errors.append("分辨率必须是整数")
+
         self.training_config['base_model'] = self.base_model_var.get().strip()
+        return errors
 
     def update_server_config(self):
         """更新服务器配置（向前兼容）"""
@@ -2252,26 +2644,273 @@ class CloudTrainingGUI:
             if not dataset_path or not os.path.exists(dataset_path):
                 messagebox.showerror("错误", "请选择有效的数据集路径")
                 return
-                
-            self.log_message("正在后台处理数据集，请稍候...")
-            
+
+            self.dataset_check_passed = False
+            self.remote_verify_passed = False
+            self.update_action_button_states()
+            self.log_message("开始检查数据集...")
+            started_at = time.time()
+            if hasattr(self, 'upload_status_var'):
+                self.upload_status_var.set("检查中: 正在分析本地数据集...")
+            if hasattr(self, 'dataset_summary_var'):
+                self.dataset_summary_var.set("检查总结: 检查进行中...")
+            self.analyze_dataset()
+
             def _process_task():
+                def _live(msg):
+                    if hasattr(self, 'upload_status_var'):
+                        self.root.after(0, lambda m=msg: self.upload_status_var.set(m))
                 try:
-                    self.analyze_dataset()
-                    self.check_and_fix_dataset()
-                    self.generate_training_script()
-                    self.root.after(0, lambda: self.log_message("数据集处理完成！"))
-                    self.root.after(0, lambda: messagebox.showinfo("成功", "数据集处理及脚本生成完成！"))
+                    _live("本地检查中: 正在校验标签和目录结构...")
+                    result = self.validate_local_dataset(dataset_path, progress_cb=_live)
+                    if result.get('passed'):
+                        _live("本地检查通过，正在检查云端差异...")
+                        remote_path = self.remote_path_var.get().strip().replace('\\', '/').rstrip('/')
+                        result['remote_diff'] = self.quick_compare_remote_dataset(dataset_path, remote_path, progress_cb=_live)
+                    result['check_elapsed_sec'] = time.time() - started_at
+                    self.root.after(0, lambda r=result: self.apply_local_check_result(r))
                 except Exception as e:
                     self.root.after(0, lambda err=str(e): self.log_message(f"处理数据集失败: {err}"))
                     self.root.after(0, lambda err=str(e): messagebox.showerror("错误", f"处理数据集失败: {err}"))
 
-            # 启动后台线程执行处理任务，避免阻塞主界面
             threading.Thread(target=_process_task, daemon=True).start()
             
         except Exception as e:
             self.log_message(f"启动处理任务失败: {e}")
             messagebox.showerror("错误", f"启动处理任务失败: {e}")
+
+    def validate_local_dataset(self, dataset_path, max_errors=120, progress_cb=None):
+        result = {
+            'passed': False,
+            'errors': [],
+            'warnings': [],
+            'summary': {},
+            'fingerprint': ''
+        }
+
+        def add_error(msg):
+            if len(result['errors']) < max_errors:
+                result['errors'].append(msg)
+
+        def add_warning(msg):
+            if len(result['warnings']) < max_errors:
+                result['warnings'].append(msg)
+
+        yaml_file = os.path.join(dataset_path, 'dataset.yaml')
+        if not os.path.exists(yaml_file):
+            add_error("未找到 dataset.yaml")
+            return result
+
+        try:
+            with open(yaml_file, 'r', encoding='utf-8') as f:
+                yaml_data = yaml.safe_load(f) or {}
+        except Exception as e:
+            add_error(f"dataset.yaml 读取失败: {e}")
+            return result
+
+        names = self._normalize_name_list(yaml_data.get('names'))
+        nc_raw = yaml_data.get('nc')
+        nc = None
+        try:
+            if nc_raw is not None:
+                nc = int(nc_raw)
+        except Exception:
+            add_error(f"nc 非法: {nc_raw}")
+        if nc is None and names:
+            nc = len(names)
+        if nc is None:
+            add_error("dataset.yaml 缺少有效的 nc")
+            nc = 0
+        if names and len(names) != nc:
+            add_error(f"names 数量({len(names)})与 nc({nc})不一致")
+
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        split_stats = {}
+        class_counter = {}
+        total_labels = 0
+        total_images = 0
+        scanned_label_files = 0
+
+        for split in ['train', 'val', 'test']:
+            img_dir = os.path.join(dataset_path, split, 'images')
+            lbl_dir = os.path.join(dataset_path, split, 'labels')
+            if not os.path.isdir(img_dir) and not os.path.isdir(lbl_dir):
+                continue
+            if not os.path.isdir(img_dir):
+                add_error(f"{split}/images 目录缺失")
+                continue
+            if not os.path.isdir(lbl_dir):
+                add_error(f"{split}/labels 目录缺失")
+                continue
+
+            image_bases = set()
+            label_bases = set()
+
+            for fn in os.listdir(img_dir):
+                if os.path.splitext(fn)[1].lower() in image_exts:
+                    image_bases.add(os.path.splitext(fn)[0])
+            for fn in os.listdir(lbl_dir):
+                if fn.lower().endswith('.txt'):
+                    label_bases.add(os.path.splitext(fn)[0])
+
+            missing_labels = sorted(image_bases - label_bases)
+            orphan_labels = sorted(label_bases - image_bases)
+            if missing_labels:
+                add_warning(f"{split} 有 {len(missing_labels)} 张图片缺少标签")
+            if orphan_labels:
+                add_error(f"{split} 有 {len(orphan_labels)} 个标签无对应图片")
+
+            total_images += len(image_bases)
+            total_labels += len(label_bases)
+            split_stats[split] = {'images': len(image_bases), 'labels': len(label_bases)}
+            if callable(progress_cb):
+                progress_cb(f"本地检查中: {split} images={len(image_bases)} labels={len(label_bases)}")
+
+            for base in sorted(label_bases):
+                label_file = os.path.join(lbl_dir, f"{base}.txt")
+                try:
+                    with open(label_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        for idx, line in enumerate(f, 1):
+                            text = line.strip()
+                            if not text:
+                                continue
+                            parts = text.split()
+                            if len(parts) != 5:
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 列数不是5")
+                                continue
+                            try:
+                                cls_raw = float(parts[0])
+                                cls_id = int(cls_raw)
+                                if cls_id != cls_raw:
+                                    raise ValueError("not int")
+                            except Exception:
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 class_id 非整数")
+                                continue
+                            if cls_id < 0 or cls_id >= nc:
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 class_id 越界(0..{max(nc - 1, 0)})")
+                                continue
+                            try:
+                                x, y, w, h = map(float, parts[1:])
+                            except Exception:
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 bbox 非法")
+                                continue
+                            if w <= 0 or h <= 0:
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 w/h 必须大于0")
+                                continue
+                            if not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
+                                add_error(f"{split}/labels/{base}.txt 第{idx}行 bbox 超出0..1")
+                                continue
+                            class_counter[cls_id] = class_counter.get(cls_id, 0) + 1
+                except Exception as e:
+                    add_error(f"{split}/labels/{base}.txt 读取失败: {e}")
+                scanned_label_files += 1
+                if callable(progress_cb) and scanned_label_files % 200 == 0:
+                    progress_cb(f"本地检查中: 已扫描标签文件 {scanned_label_files}")
+
+        result['summary'] = {
+            'nc': nc,
+            'names': names,
+            'splits': split_stats,
+            'total_images': total_images,
+            'total_labels': total_labels,
+            'class_counter': class_counter
+        }
+        result['fingerprint'] = self._build_dataset_fingerprint(dataset_path)
+        result['passed'] = len(result['errors']) == 0
+        return result
+
+    def apply_local_check_result(self, result):
+        self.path_issues_text.delete(1.0, tk.END)
+        if result.get('errors'):
+            self.path_issues_text.insert(tk.END, "🔴 检查失败:\n")
+            for msg in result['errors']:
+                self.path_issues_text.insert(tk.END, f"• {msg}\n")
+            if result.get('warnings'):
+                self.path_issues_text.insert(tk.END, "\n🟡 警告:\n")
+                for msg in result['warnings']:
+                    self.path_issues_text.insert(tk.END, f"• {msg}\n")
+            self.dataset_check_passed = False
+            self.remote_verify_passed = False
+            self.last_dataset_fingerprint = ""
+            self.last_dataset_check_time = ""
+            if hasattr(self, 'dataset_check_status_var'):
+                self.dataset_check_status_var.set("检查状态: 失败")
+            if hasattr(self, 'dataset_summary_var'):
+                elapsed = float(result.get('check_elapsed_sec', 0) or 0)
+                self.dataset_summary_var.set(
+                    f"检查总结: 失败，错误{len(result.get('errors', []))}，警告{len(result.get('warnings', []))}，耗时{elapsed:.1f}s"
+                )
+            self.update_action_button_states()
+            self.log_message("数据集检查失败，请修复后再上传")
+            messagebox.showerror("检查失败", "数据集检查未通过，已阻止上传")
+            return
+
+        summary = result.get('summary', {})
+        names = summary.get('names', [])
+        nc = summary.get('nc', 0)
+        self.num_classes_var.set(str(nc))
+        self.dataset_config['num_classes'] = nc
+        self.dataset_config['classes'] = names
+        self.classes_text.delete(1.0, tk.END)
+        for i, name in enumerate(names):
+            self.classes_text.insert(tk.END, f"{i}: {name}\n")
+
+        self.path_issues_text.insert(tk.END, "✅ 数据集检查通过\n")
+        splits = summary.get('splits', {})
+        for split in ['train', 'val', 'test']:
+            if split in splits:
+                info = splits[split]
+                self.path_issues_text.insert(tk.END, f"• {split}: images={info['images']} labels={info['labels']}\n")
+        if result.get('warnings'):
+            self.path_issues_text.insert(tk.END, "\n🟡 警告:\n")
+            for msg in result['warnings']:
+                self.path_issues_text.insert(tk.END, f"• {msg}\n")
+
+        remote_diff = result.get('remote_diff') or {}
+        self.last_upload_plan = None
+        if remote_diff.get('ok'):
+            need_upload = int(remote_diff.get('need_upload', 0))
+            skip_count = int(remote_diff.get('skip_count', 0))
+            expected_total = int(remote_diff.get('expected_total', 0))
+            self.last_upload_plan = {
+                'fingerprint': result.get('fingerprint', ''),
+                'remote_path': self.remote_path_var.get().replace('\\', '/').rstrip('/'),
+                'todo_rel_paths': list(remote_diff.get('todo_rel_paths') or []),
+                'expected_total': expected_total,
+                'skip_count': skip_count,
+                'checked_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self.path_issues_text.insert(
+                tk.END,
+                f"\n☁️ 云端差异检查: 需上传 {need_upload}，已同步可跳过 {skip_count}，总计 {expected_total}\n"
+            )
+            self.log_message(f"云端差异检查完成：需上传{need_upload}，可跳过{skip_count}")
+        else:
+            msg = remote_diff.get('msg', '').strip()
+            if msg:
+                self.path_issues_text.insert(tk.END, f"\n☁️ 云端差异检查: {msg}\n")
+                self.log_message(f"云端差异检查跳过/失败: {msg}")
+
+        summary_text = self._build_check_summary_text(result)
+        if hasattr(self, 'dataset_summary_var'):
+            self.dataset_summary_var.set(f"检查总结: {summary_text}")
+        self.log_message(f"检查总结: {summary_text}")
+        self.path_issues_text.insert(tk.END, f"\n📌 检查总结: {summary_text}\n")
+
+        self.dataset_check_passed = True
+        auto_remote_passed = bool(remote_diff.get('ok')) and int(remote_diff.get('need_upload', -1)) == 0
+        self.remote_verify_passed = auto_remote_passed
+        self.last_dataset_fingerprint = result.get('fingerprint', '')
+        self.last_dataset_check_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if hasattr(self, 'dataset_check_status_var'):
+            self.dataset_check_status_var.set(f"检查状态: 已通过 ({self.last_dataset_check_time})")
+        self.update_action_button_states()
+        if auto_remote_passed:
+            self.log_message(f"数据集检查通过 ({self.last_dataset_check_time})，云端已同步，可直接开始训练")
+            messagebox.showinfo("检查通过", "数据集检查通过，且云端已同步，可直接开始训练")
+        else:
+            self.log_message(f"数据集检查通过 ({self.last_dataset_check_time})，可开始上传")
+            messagebox.showinfo("检查通过", "数据集检查通过，可上传数据集")
 
     def check_yaml_paths(self, yaml_data, dataset_path):
         """检查yaml配置中的路径问题"""
@@ -2964,7 +3603,7 @@ if __name__ == "__main__":
         except Exception:
             return {}
 
-    def _upload_worker(self, connect_params, local_file, remote_file, retry_times):
+    def _upload_worker(self, connect_params, local_file, remote_file, retry_times, skip_remote_stat=False):
         """单个文件上传（含重试），每个线程独立建立连接避免通道冲突"""
         import stat
         
@@ -2988,14 +3627,14 @@ if __name__ == "__main__":
                     stdin, stdout, stderr = ssh.exec_command(f"mkdir -p '{remote_dir}'")
                     stdout.channel.recv_exit_status() # 等待目录创建完成
 
-                    # 秒传：远程文件大小一致则跳过
-                    try:
-                        remote_stat = sftp.stat(remote_file)
-                        local_size  = os.path.getsize(local_file)
-                        if stat.S_ISREG(remote_stat.st_mode) and remote_stat.st_size == local_size:
-                            return 'skip'
-                    except FileNotFoundError:
-                        pass # 远程文件不存在，继续上传流程
+                    if not skip_remote_stat:
+                        try:
+                            remote_stat = sftp.stat(remote_file)
+                            local_size  = os.path.getsize(local_file)
+                            if stat.S_ISREG(remote_stat.st_mode) and remote_stat.st_size == local_size:
+                                return 'skip'
+                        except FileNotFoundError:
+                            pass
                     
                     # 3. 使用 sftp.put 替代 scp，更加稳定且避免 No such file or directory 错误
                     if self.upload_cancel_event.is_set():
@@ -3022,6 +3661,141 @@ if __name__ == "__main__":
             self.upload_toggle_button.configure(text="停止上传", bootstyle="danger")
         else:
             self.upload_toggle_button.configure(text="上传数据集", bootstyle="success")
+        self.update_action_button_states()
+
+    def _should_upload_file(self, rel_path):
+        rel = rel_path.replace('\\', '/').lstrip('./')
+        lower_rel = rel.lower()
+        parts = rel.split('/')
+        if any(name.startswith('.') and name not in ['.'] for name in parts):
+            return False
+        if lower_rel.endswith('.upload_checkpoint.json'):
+            return False
+        if '.backup_' in lower_rel:
+            return False
+        if lower_rel in ['classes.txt', 'export_stats.txt']:
+            return False
+        if rel == 'dataset.yaml':
+            return True
+        if len(parts) >= 3 and parts[0] in ['train', 'val', 'test'] and parts[1] in ['images', 'labels']:
+            if parts[1] == 'images':
+                return os.path.splitext(lower_rel)[1] in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
+            return lower_rel.endswith('.txt')
+        return False
+
+    def verify_remote_dataset(self, connect_params, remote_path):
+        result = {'ok': False, 'msg': '云端校验未执行'}
+        ssh = None
+        try:
+            remote_script = f"""import os, json, yaml, math
+dataset = {repr(remote_path)}
+res = {{"ok": False, "msg": "", "bad": None, "counts": {{}}}}
+yaml_file = os.path.join(dataset, "dataset.yaml")
+if not os.path.exists(yaml_file):
+    res["msg"] = "dataset.yaml不存在"
+    print(json.dumps(res, ensure_ascii=False))
+    raise SystemExit(0)
+with open(yaml_file, "r", encoding="utf-8") as f:
+    data = yaml.safe_load(f) or {{}}
+try:
+    nc = int(data.get("nc", 0))
+except Exception:
+    nc = 0
+if nc <= 0:
+    res["msg"] = "nc非法或缺失"
+    print(json.dumps(res, ensure_ascii=False))
+    raise SystemExit(0)
+for split in ["train", "val", "test"]:
+    img_dir = os.path.join(dataset, split, "images")
+    lbl_dir = os.path.join(dataset, split, "labels")
+    if not os.path.isdir(img_dir) and not os.path.isdir(lbl_dir):
+        continue
+    if not os.path.isdir(img_dir) or not os.path.isdir(lbl_dir):
+        res["msg"] = f"{{split}}目录不完整"
+        print(json.dumps(res, ensure_ascii=False))
+        raise SystemExit(0)
+    imgs = set()
+    lbls = set()
+    for fn in os.listdir(img_dir):
+        ext = os.path.splitext(fn)[1].lower()
+        if ext in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]:
+            imgs.add(os.path.splitext(fn)[0])
+    for fn in os.listdir(lbl_dir):
+        if fn.lower().endswith(".txt"):
+            lbls.add(os.path.splitext(fn)[0])
+    res["counts"][split] = {{"images": len(imgs), "labels": len(lbls)}}
+    orphan = sorted(lbls - imgs)
+    if orphan:
+        res["msg"] = f"{{split}}存在无对应图片的标签"
+        res["bad"] = {{"file": f"{{split}}/labels/{{orphan[0]}}.txt", "line": 0, "reason": "orphan_label"}}
+        print(json.dumps(res, ensure_ascii=False))
+        raise SystemExit(0)
+    for base in sorted(lbls):
+        p = os.path.join(lbl_dir, base + ".txt")
+        with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            for idx, line in enumerate(f, 1):
+                t = line.strip()
+                if not t:
+                    continue
+                parts = t.split()
+                if len(parts) != 5:
+                    res["msg"] = "标签列数错误"
+                    res["bad"] = {{"file": p, "line": idx, "reason": "len!=5", "content": t}}
+                    print(json.dumps(res, ensure_ascii=False))
+                    raise SystemExit(0)
+                try:
+                    cls = int(float(parts[0]))
+                except Exception:
+                    res["msg"] = "class_id非法"
+                    res["bad"] = {{"file": p, "line": idx, "reason": "class_parse", "content": t}}
+                    print(json.dumps(res, ensure_ascii=False))
+                    raise SystemExit(0)
+                if cls < 0 or cls >= nc:
+                    res["msg"] = "class_id越界"
+                    res["bad"] = {{"file": p, "line": idx, "reason": f"class_range_0_{{nc-1}}", "content": t}}
+                    print(json.dumps(res, ensure_ascii=False))
+                    raise SystemExit(0)
+                try:
+                    x, y, w, h = map(float, parts[1:])
+                except Exception:
+                    res["msg"] = "bbox非法"
+                    res["bad"] = {{"file": p, "line": idx, "reason": "bbox_parse", "content": t}}
+                    print(json.dumps(res, ensure_ascii=False))
+                    raise SystemExit(0)
+                if w <= 0 or h <= 0 or not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1):
+                    res["msg"] = "bbox越界"
+                    res["bad"] = {{"file": p, "line": idx, "reason": "bbox_range", "content": t}}
+                    print(json.dumps(res, ensure_ascii=False))
+                    raise SystemExit(0)
+res["ok"] = True
+res["msg"] = "云端数据集校验通过"
+print(json.dumps(res, ensure_ascii=False))"""
+
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(**connect_params, timeout=15)
+            cmd = "/root/miniforge3/bin/python3 - <<'PY'\n" + remote_script + "\nPY"
+            stdin, stdout, stderr = ssh.exec_command(cmd, timeout=180)
+            out = stdout.read().decode('utf-8', errors='ignore').strip()
+            err = stderr.read().decode('utf-8', errors='ignore').strip()
+            if err:
+                result['msg'] = err
+                return result
+            if not out:
+                result['msg'] = "云端校验无输出"
+                return result
+            last_line = out.splitlines()[-1]
+            obj = json.loads(last_line)
+            return obj
+        except Exception as e:
+            result['msg'] = str(e)
+            return result
+        finally:
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
 
     def upload_dataset(self):
         """并发+断点续传上传数据集到云端"""
@@ -3038,6 +3812,10 @@ if __name__ == "__main__":
         if not self.dataset_config['local_path']:
             messagebox.showerror("错误", "请先选择数据集路径")
             return
+        if not self._ensure_dataset_check_is_fresh() or not self.dataset_check_passed:
+            messagebox.showwarning("提示", "请先点击“检查数据集”并通过后再上传")
+            self.update_action_button_states()
+            return
         if not hasattr(self, 'upload_status_var'):
             self.upload_status_var = tk.StringVar(value="")
         if not hasattr(self, 'upload_progress_var'):
@@ -3050,10 +3828,16 @@ if __name__ == "__main__":
         def upload_thread():
             canceled = False
             try:
-                # 读取并发度与重试次数 (降低并发度防止触发SSH连接限制)
-                max_workers = self.config.get('upload', {}).get('max_workers', 4)
-                if max_workers > 4:
-                    max_workers = 4 # 强制限制最大并发，防止 SSH MaxStartups 拒绝连接
+                # 读取并发度与重试次数
+                max_workers_cfg = self.config.get('upload', {}).get('max_workers', 8)
+                try:
+                    max_workers_cfg = int(max_workers_cfg)
+                except Exception:
+                    max_workers_cfg = 8
+                if max_workers_cfg < 1:
+                    max_workers_cfg = 1
+                if max_workers_cfg > 32:
+                    max_workers_cfg = 32
                 retry_times = self.config.get('upload', {}).get('retry_times', 3)
 
                 self.root.after(0, lambda: self.upload_status_var.set("正在扫描文件..."))
@@ -3081,7 +3865,7 @@ if __name__ == "__main__":
 
                 local_path  = self.dataset_config['local_path']
                 # 强制使用正斜杠处理远端基础路径
-                remote_path = self.remote_path_var.get().replace('\\', '/').rstrip('/')
+                remote_path = self.remote_path_var.get().strip().replace('\\', '/').rstrip('/')
                 ckpt_path   = os.path.join(local_path, '.upload_checkpoint.json')
 
                 # 扫描全部文件
@@ -3097,9 +3881,11 @@ if __name__ == "__main__":
                         local_file = os.path.join(root, f)
                         # 使用 os.path.relpath 计算相对路径，然后强制转换为 Unix 风格的正斜杠
                         rel_path   = os.path.relpath(local_file, local_path).replace('\\', '/')
+                        if not self._should_upload_file(rel_path):
+                            continue
                         # 确保组合后的路径也是纯正斜杠
                         remote_file = f"{remote_path}/{rel_path}"
-                        all_files.append((local_file, remote_file))
+                        all_files.append((local_file, remote_file, rel_path))
                     if canceled:
                         break
                 total = len(all_files)
@@ -3107,8 +3893,59 @@ if __name__ == "__main__":
 
                 # 加载断点
                 done = self._checkpoint_load(ckpt_path)  # {local_file: 'ok'/'skip'/...}
-                todo = [(lf, rf) for lf, rf in all_files if done.get(lf) != 'ok' and done.get(lf) != 'skip']
+                fast_plan_enabled = False
+                skip_remote_stat = False
+                plan = self.last_upload_plan if isinstance(self.last_upload_plan, dict) else None
+                if plan:
+                    plan_remote = str(plan.get('remote_path', '')).rstrip('/')
+                    plan_fp = str(plan.get('fingerprint', ''))
+                    if plan_remote == remote_path and plan_fp == self.last_dataset_fingerprint:
+                        plan_todo = set(plan.get('todo_rel_paths') or [])
+                        for lf, _, rel in all_files:
+                            if rel not in plan_todo and done.get(lf) not in ['ok', 'skip']:
+                                done[lf] = 'skip'
+                        fast_plan_enabled = True
+                        total_files = max(1, len(all_files))
+                        if len(plan_todo) <= max(20, int(total_files * 0.2)):
+                            skip_remote_stat = True
+                            self.root.after(0, lambda: self.upload_status_var.set(
+                                f"已复用检查阶段云端差异结果，预计直传 {len(plan_todo)} 个文件..."
+                            ))
+                        else:
+                            self.root.after(0, lambda: self.upload_status_var.set(
+                                f"已复用检查阶段云端差异结果，预计上传 {len(plan_todo)} 个文件，上传前将做秒传校验避免重复上传..."
+                            ))
+                todo = [(lf, rf) for lf, rf, _ in all_files if done.get(lf) != 'ok' and done.get(lf) != 'skip']
                 skip_count = total - len(todo)
+                todo_count = len(todo)
+
+                sample_n = min(200, todo_count)
+                sample_bytes = 0
+                for i in range(sample_n):
+                    try:
+                        sample_bytes += int(os.path.getsize(todo[i][0]))
+                    except Exception:
+                        pass
+                avg_size = (sample_bytes / sample_n) if sample_n > 0 else 0
+
+                if avg_size <= 256 * 1024:
+                    recommended_workers = 16
+                elif avg_size <= 2 * 1024 * 1024:
+                    recommended_workers = 12
+                elif avg_size <= 8 * 1024 * 1024:
+                    recommended_workers = 8
+                else:
+                    recommended_workers = 4
+
+                if todo_count <= 10:
+                    recommended_workers = min(recommended_workers, 3)
+                elif todo_count <= 50:
+                    recommended_workers = min(recommended_workers, 6)
+
+                max_workers = max(1, min(max_workers_cfg, recommended_workers))
+                self.root.after(0, lambda mw=max_workers, cfg=max_workers_cfg, n=todo_count: self.log_message(
+                    f"上传并发线程: {mw}（配置上限 {cfg}，待上传 {n}）"
+                ))
 
                 ok_count   = 0
                 fail_list  = []
@@ -3132,7 +3969,14 @@ if __name__ == "__main__":
                         if self.upload_cancel_event.is_set():
                             canceled = True
                             break
-                        fut = pool.submit(self._upload_worker, connect_params, local_file, remote_file, retry_times)
+                        fut = pool.submit(
+                            self._upload_worker,
+                            connect_params,
+                            local_file,
+                            remote_file,
+                            retry_times,
+                            skip_remote_stat
+                        )
                         future_map[fut] = local_file
 
                     for fut in as_completed(future_map):
@@ -3165,17 +4009,34 @@ if __name__ == "__main__":
                     os.remove(ckpt_path)
 
                 if canceled or self.upload_cancel_event.is_set():
+                    self.remote_verify_passed = False
                     self.root.after(0, lambda: self.upload_status_var.set("上传已停止，可再次点击继续断点续传"))
                     self.root.after(0, lambda: self.log_message("上传已停止，断点已保留"))
                 else:
-                    self.root.after(0, lambda: messagebox.showinfo(
-                        "上传完成",
-                        f"总计 {total}\n成功 {ok_count}\n跳过 {skip_count}\n失败 {len(fail_list)}"))
-                    self.root.after(0, lambda: self.upload_status_var.set("上传完成"))
-                    self.root.after(0, lambda: self.log_message("数据集上传完成"))
+                    verify_res = self.verify_remote_dataset(connect_params, remote_path)
+                    if verify_res.get('ok'):
+                        self.remote_verify_passed = True
+                        self.root.after(0, lambda: messagebox.showinfo(
+                            "上传完成",
+                            f"总计 {total}\n成功 {ok_count}\n跳过 {skip_count}\n失败 {len(fail_list)}\n云端验收通过，可开始训练"))
+                        self.root.after(0, lambda: self.upload_status_var.set("上传完成，云端验收通过"))
+                        self.root.after(0, lambda: self.log_message("数据集上传完成，云端验收通过"))
+                    else:
+                        self.remote_verify_passed = False
+                        bad = verify_res.get('bad') or {}
+                        bad_tip = ""
+                        bad_text = ""
+                        if bad:
+                            bad_tip = f"\n问题: {bad.get('file', '')} L{bad.get('line', 0)} {bad.get('reason', '')}"
+                            bad_text = f"{bad.get('file', '')} L{bad.get('line', 0)} {bad.get('reason', '')}"
+                        fail_msg = f"{verify_res.get('msg', '未知错误')}{bad_tip}"
+                        self.root.after(0, lambda: self.upload_status_var.set("上传完成，但云端验收失败"))
+                        self.root.after(0, lambda m=fail_msg: self.log_message(f"云端验收失败: {m}"))
+                        self.root.after(0, lambda m=fail_msg, b=bad_text: self.show_remote_verify_failure(m, b))
 
             except Exception as e:
                 err = str(e)
+                self.remote_verify_passed = False
                 self.root.after(0, lambda err=err: self.upload_status_var.set(f"上传失败: {err}"))
                 self.root.after(0, lambda err=err: self.log_message(f"数据集上传失败: {err}"))
             finally:
@@ -3233,8 +4094,55 @@ if __name__ == "__main__":
     
     def start_training(self):
         """开始训练"""
+        errors = self.update_all_configs(collect_errors=True)
+        try:
+            if int(self.training_config.get('epochs', 0)) <= 0:
+                errors.append("训练轮次必须大于0")
+        except Exception:
+            errors.append("训练轮次无效")
+        try:
+            if int(self.training_config.get('batch_size', 0)) <= 0:
+                errors.append("批次大小必须大于0")
+        except Exception:
+            errors.append("批次大小无效")
+        try:
+            if int(self.training_config.get('image_size', 0)) <= 0:
+                errors.append("分辨率必须大于0")
+        except Exception:
+            errors.append("分辨率无效")
+        try:
+            if float(self.training_config.get('learning_rate', 0.0)) <= 0:
+                errors.append("学习率必须大于0")
+        except Exception:
+            errors.append("学习率无效")
+        if errors:
+            uniq_errors = []
+            for e in errors:
+                if e not in uniq_errors:
+                    uniq_errors.append(e)
+            messagebox.showerror("参数错误", "\n".join(uniq_errors))
+            return
+        self.save_config()
+        expected_epochs = int(self.training_config['epochs'])
+        expected_batch_size = int(self.training_config['batch_size'])
+        expected_learning_rate = float(self.training_config['learning_rate'])
+        expected_image_size = int(self.training_config['image_size'])
+        expected_base_model = self.training_config['base_model']
+        expected_lr_str = str(expected_learning_rate)
+        script_content = self.create_training_script_content()
+        self.log_message(
+            f"本次训练参数: model={expected_base_model}, imgsz={expected_image_size}, batch={expected_batch_size}, lr0={expected_lr_str}, epochs={expected_epochs}"
+        )
         if not self.is_connected:
             messagebox.showerror("错误", "请先测试服务器连接")
+            return
+        if not self._ensure_dataset_check_is_fresh() or not self.dataset_check_passed:
+            messagebox.showwarning("提示", "请先完成并通过“检查数据集”")
+            self.update_action_button_states()
+            return
+        if not self.remote_verify_passed:
+            messagebox.showwarning("提示", "请先上传数据集并通过云端验收")
+            self.update_action_button_states()
             return
         
         def training_thread():
@@ -3389,7 +4297,6 @@ else:
                     self.root.after(0, lambda: self.log_message("⚠ 模型预下载失败，但继续训练（训练脚本中有备用下载机制）"))
                 
                 # 上传训练脚本
-                script_content = self.create_training_script_content()
                 with SCPClient(ssh.get_transport()) as scp:
                     # 创建临时脚本文件
                     temp_script = 'temp_training_script.py'
@@ -3409,6 +4316,21 @@ else:
                 else:
                     self.root.after(0, lambda: self.log_message("✗ 训练脚本上传失败"))
                     return
+
+                stdin, stdout, stderr = ssh.exec_command("grep -nE 'epochs=|batch=|lr0=|imgsz=' /root/training_script.py")
+                script_param_lines = stdout.read().decode('utf-8', errors='ignore')
+                expected_tokens = [
+                    f"epochs={expected_epochs}",
+                    f"batch={expected_batch_size}",
+                    f"lr0={expected_lr_str}",
+                    f"imgsz={expected_image_size}"
+                ]
+                missing_tokens = [t for t in expected_tokens if t not in script_param_lines]
+                if missing_tokens:
+                    self.root.after(0, lambda m=", ".join(missing_tokens): self.log_message(f"✗ 训练脚本参数校验失败，缺少: {m}"))
+                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 脚本参数不一致"))
+                    return
+                self.root.after(0, lambda: self.log_message("✓ 训练脚本参数校验通过"))
                 
                 # 检查Python环境 - 尝试多种Python命令
                 self.root.after(0, lambda: self.log_message("检查Python环境..."))
@@ -4165,7 +5087,10 @@ else:
                 
                 # 使用-u确保无缓冲输出，移除-E标志以确保PYTHONPATH环境变量生效
                 isolated_python_cmd = f'{python_cmd} -u'
+                self._reset_loss_tracking()
+                self._run_dir_logged = False
                 run_name = f'yolo_training_{timestamp}'
+                self.training_run_name = run_name
                 self.training_run_dir = f'/root/runs/train/{run_name}'
                 training_cmd = f'cd /root && {env_vars} && nohup {isolated_python_cmd} training_script.py > {log_file} 2>&1 &'
                 stdin, stdout, stderr = ssh.exec_command(training_cmd)
@@ -4231,19 +5156,8 @@ else:
                                 m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', clean_line)
                                 if m_step:
                                     try:
-                                        pct = int(m_step.group(1))
                                         current_step = int(m_step.group(2))
                                         total_steps = int(m_step.group(3))
-                                        if total_epochs and current_epoch:
-                                            overall = int(((current_epoch - 1) + (current_step / max(total_steps, 1))) / max(total_epochs, 1) * 100)
-                                            if overall < 0:
-                                                overall = 0
-                                            if overall > 100:
-                                                overall = 100
-                                            status = f"训练中: {current_epoch}/{total_epochs}  {overall}%"
-                                        else:
-                                            status = f"训练中: {pct}%"
-                                        self.root.after(0, lambda s=status: self.training_status_var.set(s))
                                     except:
                                         pass
                                 if total_epochs and current_epoch:
@@ -4724,309 +5638,344 @@ else:
         ttk.Button(progress_window, text="关闭", command=progress_window.destroy).pack(pady=10)
     
     def query_all_models(self):
-        """查询服务器内所有模型文件和创建时间"""
         import paramiko
-        
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
         connect_params = {
             'hostname': self.server_config['hostname'],
             'port': self.server_config['port'],
             'username': self.server_config['username']
         }
-        
         if self.server_config['key_file']:
             connect_params['key_filename'] = self.server_config['key_file']
         else:
             connect_params['password'] = self.server_config['password']
-        
         ssh.connect(**connect_params, timeout=30)
-        
         model_info = []
-        
+        sftp = None
         try:
-            # 查找所有.pt模型文件
-            cmd = 'find /root -name "*.pt" -type f -exec ls -la {} + 2>/dev/null | sort -k9'
+            sftp = ssh.open_sftp()
+            cmd = 'find /root/runs/train -type f \\( -name "best.pt" -o -name "best_*.pt" \\) -printf "%T@|%s|%p\\n" 2>/dev/null | sort -t"|" -k1,1nr'
             stdin, stdout, stderr = ssh.exec_command(cmd)
             output = stdout.read().decode('utf-8', errors='ignore').strip()
-            
-            if output:
-                lines = output.split('\n')
-                for line in lines:
-                    if line.strip():
-                        parts = line.split()
-                        if len(parts) >= 9:
-                            # 解析文件信息
-                            permissions = parts[0]
-                            size = parts[4]
-                            date = f"{parts[5]} {parts[6]} {parts[7]}"
-                            file_path = ' '.join(parts[8:])
-                            file_name = os.path.basename(file_path)
-                            
-                            # 获取文件大小（MB）
-                            try:
-                                size_mb = round(int(size) / (1024 * 1024), 2)
-                            except:
-                                size_mb = 0
-                            
-                            model_info.append({
-                                'name': file_name,
-                                'path': file_path,
-                                'size': f"{size_mb} MB",
-                                'date': date,
-                                'permissions': permissions
-                            })
-            
-            # 如果没有找到模型文件，查找可能的训练目录
-            if not model_info:
-                stdin, stdout, stderr = ssh.exec_command('find /root -type d -name "*train*" -o -name "*runs*" 2>/dev/null')
-                dirs = stdout.read().decode('utf-8', errors='ignore').strip()
-                if dirs:
-                    model_info.append({
-                        'name': '未找到模型文件',
-                        'path': '但发现以下训练目录：\n' + dirs,
-                        'size': '-',
-                        'date': '-',
-                        'permissions': '-'
-                    })
-        
+            if not output:
+                return model_info
+            for line in output.splitlines():
+                line = line.strip()
+                if not line or '|' not in line:
+                    continue
+                parts = line.split('|', 2)
+                if len(parts) != 3:
+                    continue
+                mtime_text, size_text, file_path = parts
+                try:
+                    mtime = float(mtime_text)
+                except Exception:
+                    mtime = 0.0
+                try:
+                    size_bytes = int(float(size_text))
+                except Exception:
+                    size_bytes = 0
+                parent_dir = os.path.dirname(file_path)
+                if os.path.basename(parent_dir) == 'weights':
+                    run_root = os.path.dirname(parent_dir)
+                else:
+                    run_root = parent_dir
+                run_dir = os.path.basename(run_root.rstrip('/')) or '-'
+                args_path = f"{run_root}/args.yaml"
+                args_data = {}
+                try:
+                    with sftp.open(args_path, 'r') as rf:
+                        raw = rf.read()
+                    if isinstance(raw, bytes):
+                        raw = raw.decode('utf-8', errors='ignore')
+                    parsed = yaml.safe_load(raw) or {}
+                    if isinstance(parsed, dict):
+                        args_data = parsed
+                except Exception:
+                    args_data = {}
+                image_size = args_data.get('imgsz', args_data.get('img_size', '-'))
+                base_model_raw = args_data.get('model', '-')
+                base_model_name = os.path.basename(str(base_model_raw)) if base_model_raw not in (None, '') else '-'
+                model_scale = self._model_profile(base_model_name).upper() if base_model_name != '-' else '-'
+                base_model_display = f"{base_model_name} ({model_scale})" if base_model_name != '-' else '-'
+                epochs = args_data.get('epochs', '-')
+                batch = args_data.get('batch', '-')
+                lr0 = args_data.get('lr0', args_data.get('lr', '-'))
+                patience = args_data.get('patience', '-')
+                optimizer = args_data.get('optimizer', '-')
+                model_info.append({
+                    'name': os.path.basename(file_path) or 'best.pt',
+                    'path': file_path,
+                    'size': self._format_bytes_text(size_bytes),
+                    'size_bytes': size_bytes,
+                    'date': datetime.fromtimestamp(max(0.0, mtime)).strftime("%Y-%m-%d %H:%M:%S"),
+                    'mtime': mtime,
+                    'run_dir': run_dir,
+                    'image_size': image_size,
+                    'base_model': base_model_display,
+                    'base_model_name': base_model_name,
+                    'model_scale': model_scale,
+                    'epochs': epochs,
+                    'batch': batch,
+                    'lr0': lr0,
+                    'patience': patience,
+                    'optimizer': optimizer
+                })
+            model_info.sort(key=lambda x: float(x.get('mtime') or 0.0), reverse=True)
         finally:
+            if sftp:
+                try:
+                    sftp.close()
+                except Exception:
+                    pass
             ssh.close()
-        
         return model_info
     
     def show_model_selection_window(self, model_info, query_window):
-        """显示模型选择窗口"""
         query_window.destroy()
         
         if not model_info:
-            messagebox.showinfo("信息", "服务器上未找到任何模型文件")
+            messagebox.showinfo("信息", "服务器上未找到可下载的best模型")
             return
         
-        # 创建模型选择窗口
         selection_window = tk.Toplevel(self.root)
-        selection_window.title("选择要下载的模型")
-        selection_window.geometry("800x600")
+        selection_window.title("选择要下载的best模型")
+        selection_window.geometry("1220x620")
         selection_window.transient(self.root)
         selection_window.grab_set()
         
-        # 居中显示
         selection_window.geometry("+%d+%d" % (
             self.root.winfo_rootx() + 50,
             self.root.winfo_rooty() + 50
         ))
         
-        # 标题框架
         title_frame = ttk.Frame(selection_window)
         title_frame.pack(fill='x', padx=20, pady=10)
         
-        ttk.Label(title_frame, text="选择要下载的模型文件", font=("Arial", 14, "bold")).pack()
-        ttk.Label(title_frame, text="💾 选择需要下载的模型文件到本地", 
+        ttk.Label(title_frame, text="选择要下载的best模型", font=("Arial", 14, "bold")).pack()
+        ttk.Label(title_frame, text="💾 仅支持单文件下载，可在保存时自定义名称", 
                  font=("Arial", 10), foreground="blue").pack(pady=5)
         
-        # 模型列表框架
         list_frame = ttk.Frame(selection_window)
         list_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
-        # 创建Treeview显示模型信息
-        columns = ('size', 'date', 'path')
-        model_tree = ttk.Treeview(list_frame, columns=columns, show='tree headings')
-        
-        # 设置列标题
-        model_tree.heading('#0', text='模型文件名')
+        columns = ('run_dir', 'imgsz', 'base_model', 'epochs', 'batch', 'lr0', 'patience', 'optimizer', 'date', 'size')
+        model_tree = ttk.Treeview(list_frame, columns=columns, show='tree headings', selectmode='browse')
+        model_tree.heading('#0', text='模型文件')
+        model_tree.heading('run_dir', text='运行目录')
+        model_tree.heading('imgsz', text='分辨率')
+        model_tree.heading('base_model', text='基础模型')
+        model_tree.heading('epochs', text='epochs')
+        model_tree.heading('batch', text='batch')
+        model_tree.heading('lr0', text='lr0')
+        model_tree.heading('patience', text='patience')
+        model_tree.heading('optimizer', text='optimizer')
+        model_tree.heading('date', text='生成时间')
         model_tree.heading('size', text='文件大小')
-        model_tree.heading('date', text='创建时间')
-        model_tree.heading('path', text='文件路径')
-        
-        # 设置列宽
-        model_tree.column('#0', width=200)
-        model_tree.column('size', width=100)
-        model_tree.column('date', width=150)
-        model_tree.column('path', width=300)
-        
-        # 滚动条
+        model_tree.column('#0', width=130, anchor='w')
+        model_tree.column('run_dir', width=190, anchor='w')
+        model_tree.column('imgsz', width=70, anchor='center')
+        model_tree.column('base_model', width=170, anchor='w')
+        model_tree.column('epochs', width=65, anchor='center')
+        model_tree.column('batch', width=65, anchor='center')
+        model_tree.column('lr0', width=80, anchor='center')
+        model_tree.column('patience', width=80, anchor='center')
+        model_tree.column('optimizer', width=100, anchor='center')
+        model_tree.column('date', width=150, anchor='center')
+        model_tree.column('size', width=90, anchor='center')
         tree_scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=model_tree.yview)
         model_tree.configure(yscrollcommand=tree_scrollbar.set)
-        
         model_tree.pack(side='left', fill='both', expand=True)
         tree_scrollbar.pack(side='right', fill='y')
         
-        # 填充模型数据
-        for model in model_info:
-            filename = os.path.basename(model['path']) if model['path'] else model['name']
-            model_tree.insert('', 'end', text=filename, 
-                            values=(model['size'], model['date'], model['path']))
+        model_map = {}
+        for idx, model in enumerate(model_info):
+            item_id = f"model_{idx}"
+            model_map[item_id] = model
+            model_tree.insert(
+                '',
+                'end',
+                iid=item_id,
+                text=(model.get('name') or 'best.pt'),
+                values=(
+                    model.get('run_dir', '-'),
+                    model.get('image_size', '-'),
+                    model.get('base_model', '-'),
+                    model.get('epochs', '-'),
+                    model.get('batch', '-'),
+                    model.get('lr0', '-'),
+                    model.get('patience', '-'),
+                    model.get('optimizer', '-'),
+                    model.get('date', '-'),
+                    model.get('size', '-')
+                )
+            )
         
-        # 选择控制框架
         control_frame = ttk.Frame(selection_window)
         control_frame.pack(fill='x', padx=20, pady=10)
-        
-        # 选择按钮
-        select_frame = ttk.Frame(control_frame)
-        select_frame.pack(side='left')
-        
-        def select_all():
-            for item in model_tree.get_children():
-                model_tree.selection_add(item)
-        
-        def deselect_all():
-            model_tree.selection_remove(model_tree.selection())
-        
-        ttk.Button(select_frame, text="全选", command=select_all).pack(side='left', padx=5)
-        ttk.Button(select_frame, text="取消全选", command=deselect_all).pack(side='left', padx=5)
-        
-        # 操作按钮
         button_frame = ttk.Frame(control_frame)
         button_frame.pack(side='right')
         
         def start_download():
             selected_items = model_tree.selection()
             if not selected_items:
-                messagebox.showwarning("警告", "请至少选择一个模型文件")
+                messagebox.showwarning("警告", "请选择一个模型文件")
                 return
-            
-            # 选择本地保存目录
-            local_dir = filedialog.askdirectory(title="选择模型保存目录")
-            if not local_dir:
+            selected_model = model_map.get(selected_items[0])
+            if not selected_model:
                 return
-            
-            # 获取选中的模型信息
-            selected_model_info = []
-            for item in selected_items:
-                values = model_tree.item(item, 'values')
-                filename = model_tree.item(item, 'text')
-                # 根据文件名在原始数据中查找对应的模型信息
-                for model in model_info:
-                    if (os.path.basename(model['path']) if model['path'] else model['name']) == filename:
-                        selected_model_info.append(model)
-                        break
-            
-            if selected_model_info:
-                selection_window.destroy()
-                self.download_selected_models(selected_model_info, local_dir)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            default_filename = self._build_download_model_filename(
+                selected_model.get('name', 'best.pt'),
+                selected_model.get('image_size', '-'),
+                selected_model.get('model_scale', '-'),
+                timestamp,
+                selected_model.get('run_dir', '')
+            )
+            initial_dir = self.dataset_config.get('local_path') or os.getcwd()
+            if not os.path.isdir(initial_dir):
+                initial_dir = os.getcwd()
+            save_path = filedialog.asksaveasfilename(
+                title="选择模型保存位置",
+                defaultextension=".pt",
+                filetypes=[("PyTorch模型", "*.pt"), ("所有文件", "*.*")],
+                initialdir=initial_dir,
+                initialfile=default_filename
+            )
+            if not save_path:
+                return
+            selection_window.destroy()
+            self.download_single_model(selected_model, save_path)
         
-        ttk.Button(button_frame, text="下载选中模型", command=start_download).pack(side='right', padx=5)
+        ttk.Button(button_frame, text="下载模型", command=start_download).pack(side='right', padx=5)
         ttk.Button(button_frame, text="取消", command=selection_window.destroy).pack(side='right', padx=5)
     
-    def download_selected_models(self, selected_models, local_dir):
-        """下载选中的模型文件"""
-        # 创建下载进度窗口
+    def _format_bytes_text(self, size_bytes):
+        value = float(max(0, size_bytes))
+        units = ["B", "KB", "MB", "GB", "TB"]
+        idx = 0
+        while value >= 1024 and idx < len(units) - 1:
+            value /= 1024.0
+            idx += 1
+        return f"{value:.1f}{units[idx]}"
+
+    def _build_download_model_filename(self, model_name, image_size, model_scale, timestamp, run_dir=""):
+        base = os.path.basename(model_name)
+        stem, ext = os.path.splitext(base)
+        if not ext:
+            ext = ".pt"
+        safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in stem) or "best"
+        safe_run = "".join(ch if str(ch).isalnum() or ch in ("-", "_") else "_" for ch in str(run_dir or "run")) or "run"
+        safe_img = "".join(ch if str(ch).isalnum() or ch in ("-", "_") else "_" for ch in str(image_size if image_size not in (None, "") else "-")) or "-"
+        safe_scale = "".join(ch if str(ch).isalnum() or ch in ("-", "_") else "_" for ch in str(model_scale if model_scale not in (None, "") else "-")) or "-"
+        return f"{safe_run}__{safe_stem}__img{safe_img}__{safe_scale}__{timestamp}{ext}"
+
+    def download_single_model(self, selected_model, local_file):
         progress_window = tk.Toplevel(self.root)
         progress_window.title("下载模型")
-        progress_window.geometry("500x200")
+        progress_window.geometry("600x240")
         progress_window.transient(self.root)
         progress_window.grab_set()
-        
-        # 居中显示
+
         progress_window.geometry("+%d+%d" % (
             self.root.winfo_rootx() + 50,
             self.root.winfo_rooty() + 50
         ))
-        
-        # 进度界面
-        tk.Label(progress_window, text=f"正在下载 {len(selected_models)} 个模型文件...", 
-                font=("Arial", 10)).pack(pady=10)
-        
+
+        remote_path = selected_model.get('path', '')
+        model_name = selected_model.get('name') or os.path.basename(remote_path) or "best.pt"
+        tk.Label(progress_window, text=f"正在下载: {model_name}", font=("Arial", 10)).pack(pady=10)
+
         progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(progress_window, variable=progress_var, maximum=100, length=450)
+        progress_bar = ttk.Progressbar(progress_window, variable=progress_var, maximum=100, length=540)
         progress_bar.pack(pady=10)
-        
+
         status_label = tk.Label(progress_window, text="准备下载...", font=("Arial", 9))
         status_label.pack(pady=5)
-        
-        # 文件列表显示
-        file_list_frame = ttk.Frame(progress_window)
-        file_list_frame.pack(fill='both', expand=True, padx=10, pady=5)
-        
-        file_listbox = tk.Listbox(file_list_frame, height=6)
-        file_scrollbar = ttk.Scrollbar(file_list_frame, orient='vertical', command=file_listbox.yview)
-        file_listbox.configure(yscrollcommand=file_scrollbar.set)
-        
-        file_listbox.pack(side='left', fill='both', expand=True)
-        file_scrollbar.pack(side='right', fill='y')
-        
-        # 取消按钮
+
         cancel_flag = {'cancelled': False}
+
         def cancel_download():
             cancel_flag['cancelled'] = True
-            progress_window.destroy()
-        
+            try:
+                progress_window.destroy()
+            except Exception:
+                pass
+
         cancel_btn = ttk.Button(progress_window, text="取消", command=cancel_download)
         cancel_btn.pack(pady=5)
-        
+
         def download_thread():
+            ssh = None
+            sftp = None
             try:
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                
+
                 connect_params = {
                     'hostname': self.server_config['hostname'],
                     'port': self.server_config['port'],
                     'username': self.server_config['username']
                 }
-                
                 if self.server_config['key_file']:
                     connect_params['key_filename'] = self.server_config['key_file']
                 else:
                     connect_params['password'] = self.server_config['password']
-                
                 ssh.connect(**connect_params)
-                
-                downloaded_files = []
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                
-                with SCPClient(ssh.get_transport()) as scp:
-                    for i, model in enumerate(selected_models):
-                        if cancel_flag['cancelled']:
-                            break
-                        
-                        # 更新状态
-                        self.root.after(0, lambda name=model['name']: 
-                                      status_label.config(text=f"正在下载: {name}"))
-                        
-                        # 本地文件名
-                        name_without_ext = os.path.splitext(model['name'])[0]
-                        local_filename = f"{name_without_ext}_{timestamp}.pt"
-                        local_file = os.path.join(local_dir, local_filename)
-                        
-                        try:
-                            # 下载文件
-                            scp.get(model['path'], local_file)
-                            downloaded_files.append(local_filename)
-                            
-                            # 更新文件列表
-                            self.root.after(0, lambda f=local_filename: 
-                                          file_listbox.insert(tk.END, f"✓ {f}"))
-                            
-                            self.root.after(0, lambda f=local_filename: 
-                                          self.log_message(f"已下载: {f}"))
-                            
-                        except Exception as e:
-                            self.root.after(0, lambda f=model['name'], err=str(e): 
-                                          file_listbox.insert(tk.END, f"✗ {f} - 失败: {err}"))
-                        
-                        # 更新进度
-                        progress = (i + 1) * 100 / len(selected_models)
-                        self.root.after(0, lambda p=progress: progress_var.set(p))
-                
-                if not cancel_flag['cancelled']:
-                    self.root.after(0, lambda: status_label.config(text="下载完成！"))
-                    self.root.after(0, lambda: self.log_message(
-                        f"模型下载完成，成功下载 {len(downloaded_files)} 个文件"))
-                    
-                    # 3秒后关闭进度窗口
-                    self.root.after(3000, progress_window.destroy)
-                else:
+                sftp = ssh.open_sftp()
+                last_ui_time = 0.0
+                try:
+                    total_bytes = int(sftp.stat(remote_path).st_size)
+                except Exception:
+                    total_bytes = 0
+                file_start_ts = time.time()
+                file_last_ts = file_start_ts
+                file_last_bytes = 0
+
+                def progress_cb(transferred, total):
+                    nonlocal last_ui_time, file_last_ts, file_last_bytes
+                    if cancel_flag['cancelled']:
+                        raise RuntimeError("用户取消下载")
+                    now_ts = time.time()
+                    dt = max(now_ts - file_last_ts, 1e-6)
+                    speed = (transferred - file_last_bytes) / dt
+                    file_last_ts = now_ts
+                    file_last_bytes = transferred
+                    if now_ts - last_ui_time < 0.2 and transferred < total:
+                        return
+                    last_ui_time = now_ts
+                    denom = max(total_bytes, total, 1)
+                    percent = min(100.0, (max(0, transferred) * 100.0 / denom))
+                    progress_text = f"{self._format_bytes_text(transferred)}/{self._format_bytes_text(denom)}"
+                    speed_text = f"{self._format_bytes_text(speed)}/s"
+                    self.root.after(0, lambda p=percent: progress_var.set(p))
+                    self.root.after(0, lambda pct=percent, txt=progress_text, spd=speed_text: status_label.config(text=f"下载中 {pct:.1f}%  {spd}  {txt}"))
+
+                sftp.get(remote_path, local_file, callback=progress_cb)
+                if cancel_flag['cancelled']:
                     self.root.after(0, lambda: self.log_message("下载已取消"))
-                
-                ssh.close()
-                
+                    return
+                self.root.after(0, lambda: progress_var.set(100.0))
+                self.root.after(0, lambda: status_label.config(text="下载完成"))
+                self.root.after(0, lambda f=os.path.basename(local_file): self.log_message(f"模型下载完成: {f}"))
+                self.root.after(0, lambda p=local_file: self.log_message(f"保存路径: {p}"))
+                self.root.after(3000, progress_window.destroy)
             except Exception as e:
                 self.root.after(0, lambda: self.log_message(f"下载模型失败: {e}"))
                 self.root.after(0, progress_window.destroy)
-        
-        import threading
+            finally:
+                if sftp:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
+                if ssh:
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+
         threading.Thread(target=download_thread, daemon=True).start()
     
     def handle_model_query_error(self, error_msg, query_window):
@@ -5036,13 +5985,8 @@ else:
     
     def init_monitoring_charts(self):
         """初始化监控图表"""
-        # 设置matplotlib样式
         plt.style.use('seaborn-v0_8-darkgrid')
-        
-        # 调整图表大小以适应2x2网格
         chart_width, chart_height = 3.0, 1.5
-        
-        # GPU利用率监控图表
         self.monitoring_figures['gpu_util'] = Figure(figsize=(chart_width, chart_height), dpi=80)
         self.monitoring_figures['gpu_util'].patch.set_facecolor('white')
         ax_gpu_util = self.monitoring_figures['gpu_util'].add_subplot(111)
@@ -5051,11 +5995,9 @@ else:
         ax_gpu_util.set_ylim(0, 100)
         ax_gpu_util.grid(True, alpha=0.3)
         ax_gpu_util.tick_params(axis='both', which='major', labelsize=6)
-        
         self.monitoring_canvases['gpu_util'] = FigureCanvasTkAgg(self.monitoring_figures['gpu_util'], self.gpu_utilization_frame)
         self.monitoring_canvases['gpu_util'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # GPU显存监控图表
+
         self.monitoring_figures['gpu_memory'] = Figure(figsize=(chart_width, chart_height), dpi=80)
         self.monitoring_figures['gpu_memory'].patch.set_facecolor('white')
         ax_gpu_memory = self.monitoring_figures['gpu_memory'].add_subplot(111)
@@ -5064,37 +6006,20 @@ else:
         ax_gpu_memory.set_ylim(0, 100)
         ax_gpu_memory.grid(True, alpha=0.3)
         ax_gpu_memory.tick_params(axis='both', which='major', labelsize=6)
-        
         self.monitoring_canvases['gpu_memory'] = FigureCanvasTkAgg(self.monitoring_figures['gpu_memory'], self.gpu_memory_frame)
         self.monitoring_canvases['gpu_memory'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # CPU使用率监控图表
-        self.monitoring_figures['cpu'] = Figure(figsize=(chart_width, chart_height), dpi=80)
-        self.monitoring_figures['cpu'].patch.set_facecolor('white')
-        ax_cpu = self.monitoring_figures['cpu'].add_subplot(111)
-        ax_cpu.set_title('CPU使用率', fontsize=9)
-        ax_cpu.set_ylabel('使用率 (%)', fontsize=7)
-        ax_cpu.set_ylim(0, 100)
-        ax_cpu.grid(True, alpha=0.3)
-        ax_cpu.tick_params(axis='both', which='major', labelsize=6)
-        
-        self.monitoring_canvases['cpu'] = FigureCanvasTkAgg(self.monitoring_figures['cpu'], self.cpu_frame)
-        self.monitoring_canvases['cpu'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # 内存使用率监控图表
-        self.monitoring_figures['memory'] = Figure(figsize=(chart_width, chart_height), dpi=80)
-        self.monitoring_figures['memory'].patch.set_facecolor('white')
-        ax_memory = self.monitoring_figures['memory'].add_subplot(111)
-        ax_memory.set_title('内存使用率', fontsize=9)
-        ax_memory.set_ylabel('使用率 (%)', fontsize=7)
-        ax_memory.set_ylim(0, 100)
-        ax_memory.grid(True, alpha=0.3)
-        ax_memory.tick_params(axis='both', which='major', labelsize=6)
-        
-        self.monitoring_canvases['memory'] = FigureCanvasTkAgg(self.monitoring_figures['memory'], self.memory_frame)
-        self.monitoring_canvases['memory'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        # 初始化空数据
+
+        self.monitoring_figures['loss'] = Figure(figsize=(6.2, 2.2), dpi=80)
+        self.monitoring_figures['loss'].patch.set_facecolor('white')
+        ax_loss = self.monitoring_figures['loss'].add_subplot(111)
+        ax_loss.set_title('Loss曲线', fontsize=10)
+        ax_loss.set_xlabel('Epoch', fontsize=8)
+        ax_loss.set_ylabel('Loss', fontsize=8)
+        ax_loss.grid(True, alpha=0.3)
+        ax_loss.tick_params(axis='both', which='major', labelsize=7)
+        self.monitoring_canvases['loss'] = FigureCanvasTkAgg(self.monitoring_figures['loss'], self.loss_frame)
+        self.monitoring_canvases['loss'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
         self.update_monitoring_charts()
     
     def start_system_monitoring(self):
@@ -5157,23 +6082,15 @@ else:
                 # 获取系统监控数据
                 gpu_util = self.get_gpu_utilization()
                 gpu_memory = self.get_gpu_memory_usage()
-                cpu_usage = self.get_cpu_usage()
-                memory_usage = self.get_memory_usage()
                 
-                # 详细调试信息：记录SSH状态和获取到的数值（限速）
                 now = time.time()
                 if now - self._last_monitor_log >= 10:
-                    debug_msg = f"SSH状态: {ssh_status} | 监控数据 - GPU利用率: {gpu_util}%, GPU显存: {gpu_memory}%, CPU: {cpu_usage}%, 内存: {memory_usage}%"
-                    # self.root.after(0, lambda msg=debug_msg: self.log_message(msg))
                     self._last_monitor_log = now
                 
-                # 添加数据到队列
                 current_time = time.time()
                 self.time_data.append(current_time)
                 self.gpu_utilization_data.append(gpu_util)
                 self.gpu_memory_data.append(gpu_memory)
-                self.cpu_data.append(cpu_usage)
-                self.memory_data.append(memory_usage)
                 if hasattr(self, "status_gpu_util_var"):
                     self.root.after(0, lambda v=gpu_util: self.status_gpu_util_var.set(f"GPU: {v:.0f}%"))
                 if hasattr(self, "status_gpu_memory_var"):
@@ -5353,31 +6270,69 @@ else:
                 ax_gpu_memory.fill_between(time_range, list(self.gpu_memory_data), alpha=0.3, color='blue')
             self.monitoring_canvases['gpu_memory'].draw()
             
-            # 更新CPU图表
-            ax_cpu = self.monitoring_figures['cpu'].axes[0]
-            ax_cpu.clear()
-            ax_cpu.set_title('CPU使用率', fontsize=9)
-            ax_cpu.set_ylabel('使用率 (%)', fontsize=7)
-            ax_cpu.set_ylim(0, 100)
-            ax_cpu.grid(True, alpha=0.3)
-            ax_cpu.tick_params(axis='both', which='major', labelsize=6)
-            if self.cpu_data:
-                ax_cpu.plot(time_range, list(self.cpu_data), 'r-', linewidth=1.5)
-                ax_cpu.fill_between(time_range, list(self.cpu_data), alpha=0.3, color='red')
-            self.monitoring_canvases['cpu'].draw()
-            
-            # 更新内存图表
-            ax_memory = self.monitoring_figures['memory'].axes[0]
-            ax_memory.clear()
-            ax_memory.set_title('内存使用率', fontsize=9)
-            ax_memory.set_ylabel('使用率 (%)', fontsize=7)
-            ax_memory.set_ylim(0, 100)
-            ax_memory.grid(True, alpha=0.3)
-            ax_memory.tick_params(axis='both', which='major', labelsize=6)
-            if self.memory_data:
-                ax_memory.plot(time_range, list(self.memory_data), 'g-', linewidth=1.5)
-                ax_memory.fill_between(time_range, list(self.memory_data), alpha=0.3, color='green')
-            self.monitoring_canvases['memory'].draw()
+            ax_loss = self.monitoring_figures['loss'].axes[0]
+            ax_loss.clear()
+            ax_loss.set_title('Loss曲线', fontsize=10)
+            ax_loss.set_xlabel('Epoch', fontsize=8)
+            ax_loss.set_ylabel('Loss', fontsize=8)
+            ax_loss.grid(True, alpha=0.3)
+            ax_loss.tick_params(axis='both', which='major', labelsize=7)
+            if self.loss_epoch_data:
+                x = list(self.loss_epoch_data)
+                box_y = list(self.loss_box_data)
+                cls_y = list(self.loss_cls_data)
+                dfl_y = list(self.loss_dfl_data)
+                if box_y:
+                    ax_loss.plot(x, box_y, color='#ff7f0e', linewidth=1.6, marker='o', markersize=2, label='box')
+                if cls_y:
+                    ax_loss.plot(x, cls_y, color='#1f77b4', linewidth=1.6, marker='o', markersize=2, label='cls')
+                if dfl_y:
+                    ax_loss.plot(x, dfl_y, color='#2ca02c', linewidth=1.6, marker='o', markersize=2, label='dfl')
+
+                def latest_valid_point(xs, ys):
+                    n = min(len(xs), len(ys))
+                    for idx in range(n - 1, -1, -1):
+                        try:
+                            xv = float(xs[idx])
+                            yv = float(ys[idx])
+                            if np.isfinite(xv) and np.isfinite(yv):
+                                return xs[idx], yv
+                        except Exception:
+                            pass
+                    return None, None
+
+                latest_epoch = None
+                try:
+                    latest_epoch = int(float(x[-1])) if x else None
+                except Exception:
+                    latest_epoch = None
+
+                x_box, v_box = latest_valid_point(x, box_y)
+                x_cls, v_cls = latest_valid_point(x, cls_y)
+                x_dfl, v_dfl = latest_valid_point(x, dfl_y)
+
+                if x_box is not None and v_box is not None:
+                    ax_loss.annotate(f'box {v_box:.4f}', xy=(x_box, v_box), xytext=(6, 10), textcoords='offset points', color='#ff7f0e', fontsize=7, fontweight='bold')
+                if x_cls is not None and v_cls is not None:
+                    ax_loss.annotate(f'cls {v_cls:.4f}', xy=(x_cls, v_cls), xytext=(6, 0), textcoords='offset points', color='#1f77b4', fontsize=7, fontweight='bold')
+                if x_dfl is not None and v_dfl is not None:
+                    ax_loss.annotate(f'dfl {v_dfl:.4f}', xy=(x_dfl, v_dfl), xytext=(6, -10), textcoords='offset points', color='#2ca02c', fontsize=7, fontweight='bold')
+
+                total_vals = [v for v in [v_box, v_cls, v_dfl] if v is not None and np.isfinite(v)]
+                total_loss = sum(total_vals) if total_vals else None
+                if latest_epoch is not None:
+                    panel_text = f"Epoch: {latest_epoch}"
+                    if total_loss is not None:
+                        panel_text += f"\n总loss: {total_loss:.4f}"
+                    ax_loss.text(
+                        0.98, 0.98, panel_text,
+                        transform=ax_loss.transAxes,
+                        ha='right', va='top',
+                        fontsize=8,
+                        bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='#999999', alpha=0.9)
+                    )
+                ax_loss.legend(loc='upper left', fontsize=7)
+            self.monitoring_canvases['loss'].draw()
 
         except Exception as e:
             print(f"更新监控图表失败: {e}")
@@ -5394,6 +6349,13 @@ else:
                 self._last_monitor_update = time.time()
         self.root.after(self.monitor_refresh_ms, _do_update)
 
+    def _reset_loss_tracking(self):
+        self.loss_epoch_data.clear()
+        self.loss_box_data.clear()
+        self.loss_cls_data.clear()
+        self.loss_dfl_data.clear()
+        self.last_loss_epoch = -1
+
     def _update_training_progress(self):
         try:
             if not self.ssh_client:
@@ -5401,30 +6363,30 @@ else:
             status_text = None
             current_epoch = None
             total_epochs = None
-            # 若未知运行目录，尝试从日志中解析或从runs/train挑选最新
-            if not self.training_run_dir:
-                if self.training_log_file:
-                    stdin, stdout, stderr = self.ssh_client.exec_command(f'tail -n 100 {self.training_log_file} 2>/dev/null || echo ""')
-                    content = stdout.read().decode('utf-8', errors='ignore')
-                    if content:
-                        import re
-                        m_run = re.search(r'Logging results to\s+(runs/train/[^\s]+)', content)
-                        if m_run:
-                            rel = m_run.group(1)
-                            self.training_run_dir = f'/root/{rel}'
-                if not self.training_run_dir:
-                    stdin, stdout, stderr = self.ssh_client.exec_command('ls -1t /root/runs/train 2>/dev/null | head -n 1')
-                    latest = stdout.read().decode('utf-8').strip()
-                    if latest:
-                        self.training_run_dir = f'/root/runs/train/{latest}'
-
+            parsed_run_dir = None
             if self.training_log_file:
                 stdin, stdout, stderr = self.ssh_client.exec_command(f'tail -n 200 {self.training_log_file} 2>/dev/null || echo ""')
                 content = stdout.read().decode('utf-8', errors='ignore')
                 if content:
-                    import re
                     ansi = re.compile(r'\x1B\[[0-9;]*[A-Za-z]')
                     text = ansi.sub('', content)
+                    self._last_training_log_text = text
+                    m_run = re.search(r'(?:Logging results to|Results saved to)\s+([^\s]+)', text)
+                    if m_run:
+                        raw_path = (m_run.group(1) or '').strip().rstrip('.,;')
+                        if raw_path.endswith('/'):
+                            raw_path = raw_path[:-1]
+                        if raw_path.endswith('results.csv'):
+                            raw_path = os.path.dirname(raw_path)
+                        if raw_path.startswith('/'):
+                            parsed_run_dir = raw_path
+                        else:
+                            idx = raw_path.find('runs/')
+                            if idx >= 0:
+                                rel = raw_path[idx:]
+                                parsed_run_dir = f'/root/{rel}'
+                        if parsed_run_dir and self.training_run_name and (self.training_run_name not in parsed_run_dir):
+                            parsed_run_dir = None
                     m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', text)
                     total_epochs = int(m_total.group(1)) if m_total else total_epochs
                     if total_epochs is None:
@@ -5440,20 +6402,19 @@ else:
                             pass
                     m_step = re.search(r'(\d+)%\|.*?(\d+)/(\d+)', text)
                     if m_step:
-                        pct = int(m_step.group(1))
-                        cur = int(m_step.group(2))
-                        tot = int(m_step.group(3))
                         if total_epochs and current_epoch:
-                            overall = int(((current_epoch - 1) + (cur / max(tot, 1))) / max(total_epochs, 1) * 100)
-                            if overall < 0:
-                                overall = 0
-                            if overall > 100:
-                                overall = 100
-                            status_text = f"训练中: {current_epoch}/{total_epochs}  {overall}%"
-                        else:
-                            status_text = f"训练中: {pct}%"
+                            status_text = f"训练中: {current_epoch}/{total_epochs}"
                     elif total_epochs and current_epoch:
                         status_text = f"训练中: {current_epoch}/{total_epochs}"
+            if parsed_run_dir and parsed_run_dir != self.training_run_dir:
+                self.training_run_dir = parsed_run_dir
+                self._run_dir_logged = False
+                self._reset_loss_tracking()
+            if not self.training_run_dir:
+                stdin, stdout, stderr = self.ssh_client.exec_command('ls -1t /root/runs/*/*/results.csv 2>/dev/null | head -n 1')
+                latest_results = stdout.read().decode('utf-8', errors='ignore').strip()
+                if latest_results:
+                    self.training_run_dir = os.path.dirname(latest_results.replace('\\', '/'))
             if self.training_run_dir and not self._run_dir_logged:
                 self._run_dir_logged = True
                 self.root.after(0, lambda p=self.training_run_dir: self.log_message(f"训练目录: {p}"))
@@ -5478,6 +6439,11 @@ else:
                             status_text = f"训练中: {ep}"
                     except:
                         pass
+            try:
+                self._update_loss_curves_from_log(self._last_training_log_text)
+            except Exception:
+                pass
+            self._update_loss_curves_from_results(expected_epoch=current_epoch)
             epoch_text = None
             if total_epochs or current_epoch is not None:
                 if total_epochs:
@@ -5499,6 +6465,190 @@ else:
                     self.root.after(0, lambda s=epoch_text: self.current_epoch_var.set(s))
         except:
             pass
+
+    def _update_loss_curves_from_results(self, expected_epoch=None):
+        if not self.ssh_client or not self.training_run_dir:
+            return False
+        def fetch_results_tail(run_dir):
+            cmd_tail = f'tail -n 200 {run_dir}/results.csv 2>/dev/null'
+            stdin, stdout, stderr = self.ssh_client.exec_command(cmd_tail)
+            return stdout.read().decode('utf-8', errors='ignore')
+
+        out = fetch_results_tail(self.training_run_dir)
+        if not out or ',' not in out:
+            if self.training_run_name:
+                return False
+            stdin, stdout, stderr = self.ssh_client.exec_command('ls -1t /root/runs/*/*/results.csv 2>/dev/null | head -n 1')
+            latest_results = stdout.read().decode('utf-8', errors='ignore').strip()
+            if latest_results:
+                new_run_dir = os.path.dirname(latest_results.replace('\\', '/'))
+                if new_run_dir and new_run_dir != self.training_run_dir:
+                    self.training_run_dir = new_run_dir
+                    self._run_dir_logged = False
+                    self._reset_loss_tracking()
+                    out = fetch_results_tail(self.training_run_dir)
+        if not out or ',' not in out:
+            return False
+        try:
+            import io
+            import csv
+            reader = csv.reader(io.StringIO(out))
+            rows = []
+            for row in reader:
+                clean_row = [str(c).strip() for c in row]
+                if any(c for c in clean_row):
+                    rows.append(clean_row)
+            if not rows or len(rows) <= 1:
+                return False
+            header = [str(x).strip() for x in rows[0]]
+            last = rows[-1]
+        except Exception:
+            return False
+        if not header or not last:
+            return False
+        if len(last) < len(header):
+            last.extend([''] * (len(header) - len(last)))
+        row_map = {}
+        for i, key in enumerate(header):
+            if i < len(last):
+                row_map[key.strip().lower()] = last[i]
+        epoch_keys = ['epoch']
+        box_keys = ['train/box_loss', 'box_loss']
+        cls_keys = ['train/cls_loss', 'cls_loss']
+        dfl_keys = ['train/dfl_loss', 'dfl_loss']
+        def find_key(candidates, contains=None):
+            for k in candidates:
+                if k in row_map:
+                    return k
+            if contains:
+                for k in row_map.keys():
+                    if contains in k:
+                        return k
+            return None
+        epoch = None
+        epoch_key = find_key(epoch_keys)
+        if epoch_key:
+            try:
+                epoch = int(float((row_map.get(epoch_key) or '').strip()))
+            except Exception:
+                epoch = None
+        if epoch is None:
+            try:
+                epoch = int(float((last[0] or '').strip()))
+            except Exception:
+                epoch = None
+        if epoch is None:
+            return False
+        if expected_epoch is not None:
+            try:
+                ep_now = int(expected_epoch)
+                if epoch > ep_now + 2:
+                    return False
+            except Exception:
+                pass
+        if self.last_loss_epoch >= 0 and epoch < self.last_loss_epoch:
+            if (self.last_loss_epoch - epoch) >= 5:
+                self._reset_loss_tracking()
+            else:
+                return False
+        def pick_float(keys, contains=None):
+            key = find_key(keys, contains=contains)
+            if key:
+                try:
+                    return float((row_map.get(key) or '').strip())
+                except Exception:
+                    pass
+            return None
+        box_loss = pick_float(box_keys, contains='box_loss')
+        cls_loss = pick_float(cls_keys, contains='cls_loss')
+        dfl_loss = pick_float(dfl_keys, contains='dfl_loss')
+        if box_loss is None and cls_loss is None and dfl_loss is None:
+            return False
+        if epoch == self.last_loss_epoch and self.loss_epoch_data:
+            try:
+                if self.loss_box_data:
+                    self.loss_box_data[-1] = box_loss if box_loss is not None else float('nan')
+                if self.loss_cls_data:
+                    self.loss_cls_data[-1] = cls_loss if cls_loss is not None else float('nan')
+                if self.loss_dfl_data:
+                    self.loss_dfl_data[-1] = dfl_loss if dfl_loss is not None else float('nan')
+            except Exception:
+                pass
+        else:
+            self.loss_epoch_data.append(epoch)
+            self.loss_box_data.append(box_loss if box_loss is not None else float('nan'))
+            self.loss_cls_data.append(cls_loss if cls_loss is not None else float('nan'))
+            self.loss_dfl_data.append(dfl_loss if dfl_loss is not None else float('nan'))
+        self.last_loss_epoch = epoch
+        return True
+
+    def _update_loss_curves_from_log(self, text):
+        if not text:
+            return False
+        try:
+            ansi = re.compile(r'\x1B\[[0-9;]*[A-Za-z]')
+        except Exception:
+            ansi = None
+        def to_float(v):
+            try:
+                return float(v)
+            except Exception:
+                return None
+        lines = text.splitlines()
+        for line in reversed(lines):
+            s = (line or '').strip()
+            if not s:
+                continue
+            if ansi:
+                try:
+                    s = ansi.sub('', s)
+                except Exception:
+                    pass
+            parts = s.split()
+            if not parts:
+                continue
+            m = re.match(r'^(\d+)\s*/\s*(\d+)$', parts[0])
+            if not m:
+                m = re.match(r'^(\d+)/(\d+)$', parts[0])
+            if not m:
+                continue
+            if len(parts) < 5:
+                continue
+            epoch = None
+            try:
+                epoch = int(m.group(1))
+            except Exception:
+                epoch = None
+            if epoch is None:
+                continue
+            box = to_float(parts[2])
+            cls = to_float(parts[3])
+            dfl = to_float(parts[4])
+            if box is None or cls is None or dfl is None:
+                continue
+            if self.last_loss_epoch >= 0 and epoch < self.last_loss_epoch:
+                if (self.last_loss_epoch - epoch) >= 5:
+                    self._reset_loss_tracking()
+                else:
+                    return False
+            if epoch == self.last_loss_epoch and self.loss_epoch_data:
+                try:
+                    if self.loss_box_data:
+                        self.loss_box_data[-1] = box
+                    if self.loss_cls_data:
+                        self.loss_cls_data[-1] = cls
+                    if self.loss_dfl_data:
+                        self.loss_dfl_data[-1] = dfl
+                except Exception:
+                    pass
+                return True
+            self.loss_epoch_data.append(epoch)
+            self.loss_box_data.append(box)
+            self.loss_cls_data.append(cls)
+            self.loss_dfl_data.append(dfl)
+            self.last_loss_epoch = epoch
+            return True
+        return False
     
     def check_python_compatibility(self, wheel_path, target_python_version="3.8"):
         """检查wheel包是否与目标Python版本兼容"""
@@ -6250,20 +7400,39 @@ else:
             self.root.after(0, lambda err=str(e): self.log_message(f"❌ Python升级过程中出错: {err}"))
             return None
     
+    def _normalize_training_log_message(self, message):
+        text = str(message)
+        ansi = re.compile(r'\x1B\[[0-9;]*[A-Za-z]')
+        text = ansi.sub('', text)
+        if text.startswith("[训练]"):
+            body = text[4:].strip()
+            if '\r' in body:
+                body = body.split('\r')[-1].strip()
+            body = re.sub(r'\s+', ' ', body)
+            if not body:
+                return None
+            if ("it/s" in body or "%|" in body) and ("100%|" not in body) and ("Epoch" not in body) and ("Class" not in body):
+                return None
+            if body == self._last_training_compact_line:
+                return None
+            self._last_training_compact_line = body
+            return f"[训练] {body}"
+        return text.replace('\r', ' ').strip()
+
     def log_message(self, message):
-        """添加日志消息"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
+        normalized = self._normalize_training_log_message(message)
+        if not normalized:
+            return
+        log_entry = f"[{timestamp}] {normalized}\n"
         
         self.log_text.insert(tk.END, log_entry)
         self.log_text.see(tk.END)
         
-        # 更新状态栏（兼容已移除状态栏的布局）
         if hasattr(self, 'status_var'):
-            self.status_var.set(message)
+            self.status_var.set(normalized)
         
-        # 记录到日志文件
-        self.logger.info(message)
+        self.logger.info(normalized)
 
 def main():
     root = ttk.Window(title="云端训练脚本优化管理平台", themename="cosmo", size=(1200, 800))

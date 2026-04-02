@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../picture/48V主电池/训练照片/检验点1训练/yolo_dataset"
+		},
+		{
+			"path": "../02.标注工具"
+		}
+	],
+	"settings": {}
+}

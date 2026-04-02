@@ -2,9 +2,15 @@
 
 import os
 import sys
+import re
+from pathlib import Path
 
-# 获取当前脚本目录
 current_dir = os.getcwd()
+app_py = Path(current_dir) / 'cloud_training_gui.py'
+app_text = app_py.read_text(encoding='utf-8')
+match = re.search(r'self\.app_version\s*=\s*"([^"]+)"', app_text)
+app_version = match.group(1) if match else 'v0.0.0'
+bundle_name = f'云端训练{app_version}'
 
 # 分析主程序
 a = Analysis(
@@ -78,7 +84,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='云端训练GUI',
+    name=bundle_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -102,5 +108,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='云端训练GUI'
+    name=bundle_name
 )

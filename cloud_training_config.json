@@ -1,6 +1,6 @@
 {
   "server": {
-    "hostname": "43.153.136.135",
+    "hostname": "43.153.149.106",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
@@ -11,17 +11,17 @@
     "remote_path": "/root/yolo_dataset",
     "dataset_name": "yolo_dataset",
     "classes": [
-      "目标卡丁",
-      "目标卡丁近景"
+      "0: 目标卡丁",
+      "1: 目标卡丁近景"
     ],
     "num_classes": 2
   },
   "training": {
     "epochs": 300,
-    "batch_size": 30,
-    "learning_rate": 0.01,
+    "batch_size": 32,
+    "learning_rate": 0.02,
     "image_size": 640,
-    "base_model": "yolov8s.pt"
+    "base_model": "yolov8n.pt"
   },
   "upload": {
     "max_workers": 8,
