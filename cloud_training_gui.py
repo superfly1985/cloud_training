@@ -30,6 +30,8 @@ from matplotlib.figure import Figure
 import matplotlib.animation as animation
 from collections import deque
 import numpy as np
+import winsound
+from plyer import notification
 
 # 设置 matplotlib 支持中文
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
@@ -38,7 +40,7 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.4"
+        self.app_version = "v2.2.5"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -790,42 +792,16 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.upload_toggle_button = ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset, bootstyle="success")
         self.upload_toggle_button.grid(row=1, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
 
-        # 第3行：开始训练 + 停止训练
-        self.start_training_button = ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success")
+        # 第3行：开始训练(带停止功能) + 下载模型
+        self.start_training_button = ttk.Button(control_frame, text="开始训练", command=self.toggle_training, bootstyle="success")
         self.start_training_button.grid(row=2, column=0, pady=3, padx=2, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="停止训练", command=self.stop_training, bootstyle="danger").grid(row=2, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="下载模型", command=self.download_models, bootstyle="info").grid(row=2, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
 
         # 初始化环境检查状态
         self.env_check_status = None  # None: 未检查, True: 正常, False: 异常
 
         # ==================== 右侧列 (Right Column) ====================
-        # 1. 训练状态显示
-        status_frame = ttk.Labelframe(right_col, text="训练状态", padding="10")
-        status_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        for i in range(4):
-            status_frame.columnconfigure(i, weight=1)
-            
-        if not hasattr(self, "training_status_var"):
-            self.training_status_var = tk.StringVar(value="未开始")
-        status_label = ttk.Label(status_frame, textvariable=self.training_status_var, font=("Arial", 10, "bold"), foreground="#007bff")
-        status_label.grid(row=0, column=0, pady=2, sticky=tk.W)
-        
-        self.status_gpu_util_var = tk.StringVar(value="GPU: 0%")
-        ttk.Label(status_frame, textvariable=self.status_gpu_util_var).grid(row=0, column=1, pady=2, sticky=tk.W)
-        
-        self.status_gpu_memory_var = tk.StringVar(value="显存: 0%")
-        ttk.Label(status_frame, textvariable=self.status_gpu_memory_var).grid(row=0, column=2, pady=2, sticky=tk.W)
-        
-        # 将原有的 Epoch: 0/0 改为显示训练持续时长
-        self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
-        ttk.Label(status_frame, textvariable=self.status_duration_var).grid(row=0, column=3, pady=2, sticky=tk.W)
-        
-        # 保留 self.current_epoch_var 引用以防其他地方报错，但不再显示
-        self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
-        
-        ttk.Button(status_frame, text="下载模型", command=self.download_models).grid(row=1, column=0, columnspan=4, pady=(5, 0), sticky=(tk.W, tk.E))
-
-        # 2. 数据集路径配置
+        # 1. 数据集路径配置
         path_frame = ttk.Labelframe(right_col, text="数据集路径配置", padding="10")
         path_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         path_frame.columnconfigure(1, weight=1)
@@ -916,6 +892,24 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
 
         self.loss_frame = ttk.Labelframe(monitor_frame, text="Loss曲线", padding="3")
         self.loss_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 0))
+
+        # 训练状态信息（从训练状态容器移入）
+        self.training_info_frame = ttk.Frame(monitor_frame)
+        self.training_info_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
+        self.training_info_frame.columnconfigure(0, weight=1)
+        self.training_info_frame.columnconfigure(1, weight=1)
+
+        # 训练中进度
+        if not hasattr(self, "training_status_var"):
+            self.training_status_var = tk.StringVar(value="未开始")
+        ttk.Label(self.training_info_frame, textvariable=self.training_status_var, font=("Arial", 10, "bold"), foreground="#007bff").grid(row=0, column=0, sticky=tk.W, padx=5)
+
+        # 训练时长
+        self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
+        ttk.Label(self.training_info_frame, textvariable=self.status_duration_var, font=("Arial", 10)).grid(row=0, column=1, sticky=tk.E, padx=5)
+
+        # 保留 self.current_epoch_var 引用以防其他地方报错
+        self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
 
         self.init_monitoring_charts()
 
@@ -4407,6 +4401,60 @@ print(json.dumps(res, ensure_ascii=False))"""
 
         threading.Thread(target=fix_thread, daemon=True).start()
 
+    def toggle_training(self):
+        """切换训练状态（开始/停止）"""
+        if hasattr(self, 'is_training') and self.is_training:
+            self.stop_training()
+        else:
+            self.start_training()
+
+    def update_training_button_state(self):
+        """更新训练按钮状态"""
+        if hasattr(self, 'is_training') and self.is_training:
+            self.start_training_button.config(text="停止训练", bootstyle="danger")
+        else:
+            self.start_training_button.config(text="开始训练", bootstyle="success")
+
+    def _notify_training_complete(self):
+        """训练完成提示（通知+声音+闪烁+弹窗）"""
+        try:
+            # 1. 系统通知（右下角气泡）
+            notification.notify(
+                title="✅ 训练完成",
+                message=f"YOLOv8 训练已完成\n总轮次: {self.training_config.get('epochs', 'N/A')} 轮\n时长: {self.status_duration_var.get()}",
+                timeout=10,
+                app_icon=None
+            )
+        except Exception as e:
+            logging.warning(f"系统通知失败: {e}")
+        
+        try:
+            # 2. 声音提示
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception as e:
+            logging.warning(f"声音提示失败: {e}")
+        
+        try:
+            # 3. 任务栏闪烁
+            self.root.attributes('-topmost', True)
+            self.root.attributes('-topmost', False)
+        except Exception as e:
+            logging.warning(f"任务栏闪烁失败: {e}")
+        
+        try:
+            # 4. 弹窗提示
+            epochs = self.training_config.get('epochs', 'N/A')
+            duration = self.status_duration_var.get()
+            messagebox.showinfo(
+                "🎉 训练完成",
+                f"训练已成功完成！\n\n"
+                f"📊 总轮次: {epochs} 轮\n"
+                f"⏱️ {duration}\n\n"
+                f'请点击"下载模型"按钮获取训练结果。'
+            )
+        except Exception as e:
+            logging.warning(f"弹窗提示失败: {e}")
+
     def start_training(self):
         """开始训练"""
         errors = self.update_all_configs(collect_errors=True)
@@ -4464,6 +4512,7 @@ print(json.dumps(res, ensure_ascii=False))"""
             try:
                 self.root.after(0, lambda: self.training_status_var.set("训练中..."))
                 self.is_training = True
+                self.root.after(0, self.update_training_button_state)
                 self.training_start_time = time.time()
                 
                 ssh = paramiko.SSHClient()
@@ -4903,14 +4952,19 @@ else:
                 
                 ssh.close()
                 
-                self.root.after(0, lambda: self.training_status_var.set("训练完成"))
+                self.root.after(0, lambda: self.training_status_var.set("✅ 训练完成"))
                 self.is_training = False
+                self.root.after(0, self.update_training_button_state)
+                
+                # 训练完成提示（通知+声音+闪烁+弹窗）
+                self.root.after(0, self._notify_training_complete)
                 
             except Exception as e:
                 error_msg = str(e)
                 self.root.after(0, lambda msg=error_msg: self.training_status_var.set(f"训练失败: {msg}"))
                 self.root.after(0, lambda msg=error_msg: self.log_message(f"训练失败: {msg}"))
                 self.is_training = False
+                self.root.after(0, self.update_training_button_state)
         
         threading.Thread(target=training_thread, daemon=True).start()
     
@@ -5018,6 +5072,7 @@ else:
                     
                     self.is_training = False
                     self.is_monitoring = False
+                    self.root.after(0, self.update_training_button_state)
                     
                     # 停止系统监控
                     self.root.after(0, self.stop_system_monitoring)
@@ -5793,10 +5848,7 @@ else:
                 self.time_data.append(current_time)
                 self.gpu_utilization_data.append(gpu_util)
                 self.gpu_memory_data.append(gpu_memory)
-                if hasattr(self, "status_gpu_util_var"):
-                    self.root.after(0, lambda v=gpu_util: self.status_gpu_util_var.set(f"GPU: {v:.0f}%"))
-                if hasattr(self, "status_gpu_memory_var"):
-                    self.root.after(0, lambda v=gpu_memory: self.status_gpu_memory_var.set(f"显存: {v:.0f}%"))
+
                 
                 # 更新图表（合并刷新，限速）
                 self._schedule_monitor_update()
