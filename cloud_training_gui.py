@@ -377,7 +377,15 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
                 ssh.connect(**connect_params, timeout=15)
-                cmd = "/root/miniforge3/bin/python3 - <<'PY'\n" + remote_script + "\nPY"
+
+                # 使用优化的Python环境检测（优先方案+兼容方案）
+                python_cmd = self.get_python_cmd_with_fallback(ssh)
+
+                if not python_cmd:
+                    result['msg'] = "未找到可用的Python命令"
+                    return result
+
+                cmd = f"{python_cmd} - <<'PY'\n" + remote_script + "\nPY"
                 stdin, stdout, stderr = ssh.exec_command(cmd, timeout=180)
                 out = stdout.read().decode('utf-8', errors='ignore').strip()
                 err = stderr.read().decode('utf-8', errors='ignore').strip()
@@ -466,6 +474,88 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             ]
         )
         self.logger = logging.getLogger(__name__)
+
+    def get_python_cmd_with_fallback(self, ssh, log_func=None):
+        """
+        获取可用的Python命令
+        策略：优先使用miniforge3（服务器2标准环境），失败则遍历查找
+        """
+        # === 优先方案：服务器2标准环境 ===
+        preferred_python = "/root/miniforge3/bin/python3"
+
+        # 检查miniforge3是否存在且有yaml/ruamel.yaml模块
+        stdin, stdout, stderr = ssh.exec_command(
+            f"test -f {preferred_python} && {preferred_python} -c 'import yaml; print(\"ok\")' 2>&1"
+        )
+        result = stdout.read().decode('utf-8').strip()
+
+        # 如果yaml导入失败，尝试ruamel.yaml（服务器2实际安装的）
+        if result != "ok":
+            stdin, stdout, stderr = ssh.exec_command(
+                f"test -f {preferred_python} && {preferred_python} -c 'from ruamel.yaml import YAML; print(\"ok\")' 2>&1"
+            )
+            result = stdout.read().decode('utf-8').strip()
+
+        if result == "ok":
+            if log_func:
+                log_func(f"✓ 使用优先方案: {preferred_python}")
+            return preferred_python
+
+        # === 兼容方案：遍历查找 ===
+        if log_func:
+            log_func("优先方案不可用，尝试兼容方案...")
+
+        python_candidates = [
+            '/root/anaconda3/bin/python3',
+            '/root/miniconda3/bin/python3',
+            'python3',
+            'python',
+            '/usr/bin/python3',
+            '/usr/bin/python',
+        ]
+
+        for cmd in python_candidates:
+            # 检查是否存在且有yaml或ruamel.yaml
+            stdin, stdout, stderr = ssh.exec_command(
+                f"which {cmd} 2>/dev/null && {cmd} -c 'import yaml; print(\"ok\")' 2>&1"
+            )
+            result = stdout.read().decode('utf-8').strip()
+            # 如果yaml导入失败，尝试ruamel.yaml
+            if result != "ok":
+                stdin, stdout, stderr = ssh.exec_command(
+                    f"which {cmd} 2>/dev/null && {cmd} -c 'from ruamel.yaml import YAML; print(\"ok\")' 2>&1"
+                )
+                result = stdout.read().decode('utf-8').strip()
+            if result == "ok":
+                if log_func:
+                    log_func(f"✓ 使用兼容方案: {cmd}")
+                return cmd
+            # 尝试安装yaml
+            stdin, stdout, stderr = ssh.exec_command(f"{cmd} -m pip install pyyaml -q 2>/dev/null")
+            stdin, stdout, stderr = ssh.exec_command(
+                f"{cmd} -c 'import yaml; print(\"ok\")' 2>&1"
+            )
+            result = stdout.read().decode('utf-8').strip()
+            if result == "ok":
+                if log_func:
+                    log_func(f"✓ 安装yaml后使用: {cmd}")
+                return cmd
+
+        # 最后尝试apt安装
+        if log_func:
+            log_func("尝试使用apt安装python3-yaml...")
+        stdin, stdout, stderr = ssh.exec_command("apt-get update -qq && apt-get install -y python3-yaml -qq 2>/dev/null")
+        for cmd in ['python3', '/usr/bin/python3']:
+            stdin, stdout, stderr = ssh.exec_command(
+                f"{cmd} -c 'import yaml; print(\"ok\")' 2>&1"
+            )
+            result = stdout.read().decode('utf-8').strip()
+            if result == "ok":
+                if log_func:
+                    log_func(f"✓ apt安装后使用: {cmd}")
+                return cmd
+
+        return None
     
     def setup_ui(self):
         """设置用户界面"""
@@ -681,21 +771,32 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         
         model_combo.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
 
-        # 3. 训练控制 (纵向统一大小按钮)
+        # 3. 训练控制 (重新设计布局：6个按钮，2列3行)
         control_frame = ttk.Labelframe(left_col, text="训练控制", padding="10")
-        # 让它在左侧填满剩余空间
         control_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 5))
         left_col.rowconfigure(2, weight=1)
         control_frame.columnconfigure(0, weight=1)
-        
-        self.upload_toggle_button = ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset, bootstyle="success")
-        self.upload_toggle_button.grid(row=0, column=0, pady=3, sticky=(tk.W, tk.E))
+        control_frame.columnconfigure(1, weight=1)
+
+        # 第1行：检查环境 + 修复环境
+        self.check_env_button = ttk.Button(control_frame, text="检查环境", command=self.check_environment, bootstyle="info")
+        self.check_env_button.grid(row=0, column=0, pady=3, padx=2, sticky=(tk.W, tk.E))
+        self.fix_env_button = ttk.Button(control_frame, text="修复环境", command=self.fix_environment, bootstyle="warning", state="disabled")
+        self.fix_env_button.grid(row=0, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
+
+        # 第2行：检查数据集 + 上传数据集
         self.process_dataset_button = ttk.Button(control_frame, text="检查数据集", command=self.process_dataset)
-        self.process_dataset_button.grid(row=1, column=0, pady=3, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="清理云端数据", command=self.clean_cloud_data, bootstyle="danger").grid(row=2, column=0, pady=3, sticky=(tk.W, tk.E))
+        self.process_dataset_button.grid(row=1, column=0, pady=3, padx=2, sticky=(tk.W, tk.E))
+        self.upload_toggle_button = ttk.Button(control_frame, text="上传数据集", command=self.upload_dataset, bootstyle="success")
+        self.upload_toggle_button.grid(row=1, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
+
+        # 第3行：开始训练 + 停止训练
         self.start_training_button = ttk.Button(control_frame, text="开始训练", command=self.start_training, bootstyle="success")
-        self.start_training_button.grid(row=3, column=0, pady=3, sticky=(tk.W, tk.E))
-        ttk.Button(control_frame, text="停止训练", command=self.stop_training, bootstyle="danger").grid(row=4, column=0, pady=3, sticky=(tk.W, tk.E))
+        self.start_training_button.grid(row=2, column=0, pady=3, padx=2, sticky=(tk.W, tk.E))
+        ttk.Button(control_frame, text="停止训练", command=self.stop_training, bootstyle="danger").grid(row=2, column=1, pady=3, padx=2, sticky=(tk.W, tk.E))
+
+        # 初始化环境检查状态
+        self.env_check_status = None  # None: 未检查, True: 正常, False: 异常
 
         # ==================== 右侧列 (Right Column) ====================
         # 1. 训练状态显示
@@ -3318,7 +3419,27 @@ echo "云端目录结构修复完成!"
         cmd = f"""cd /root && {python_cmd} - <<'PY'
 import os
 import json
-import yaml
+
+# 尝试导入yaml库（支持pyyaml和ruamel.yaml）
+try:
+    import yaml
+    def load_yaml(f):
+        return yaml.safe_load(f) or {{}}
+    def dump_yaml(data, f):
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+except ImportError:
+    try:
+        from ruamel.yaml import YAML
+        ruamel_yaml = YAML()
+        ruamel_yaml.preserve_quotes = True
+        ruamel_yaml.allow_unicode = True
+        def load_yaml(f):
+            return ruamel_yaml.load(f) or {{}}
+        def dump_yaml(data, f):
+            ruamel_yaml.dump(data, f)
+    except ImportError:
+        print(json.dumps({{"ok": False, "msg": "未找到yaml库"}}, ensure_ascii=False))
+        raise SystemExit(0)
 
 remote_path = {repr(remote_path)}
 yaml_file = os.path.join(remote_path, 'dataset.yaml')
@@ -3330,7 +3451,7 @@ if not os.path.exists(yaml_file):
     raise SystemExit(0)
 
 with open(yaml_file, 'r', encoding='utf-8') as f:
-    data = yaml.safe_load(f) or {{}}
+    data = load_yaml(f)
 if not isinstance(data, dict):
     data = {{}}
 
@@ -3357,7 +3478,7 @@ if 'names' in data and 'nc' not in data:
         data['nc'] = len(data['names'])
 
 with open(yaml_file, 'w', encoding='utf-8') as f:
-    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    dump_yaml(data, f)
 
 result["ok"] = True
 result["msg"] = "dataset.yaml已校正"
@@ -3550,7 +3671,7 @@ def main():
             lr0={learning_rate},
             imgsz={image_size},
             device=device_arg,
-            project='runs/train',
+            project='/root/runs/train',
             name='yolo_training_{timestamp}',
             save=True,
             save_period=10,
@@ -3566,7 +3687,7 @@ def main():
                 lr0={learning_rate},
                 imgsz={image_size},
                 device='cpu',
-                project='runs/train',
+                project='/root/runs/train',
                 name='yolo_training_{timestamp}',
                 save=True,
                 save_period=10,
@@ -3774,7 +3895,15 @@ print(json.dumps(res, ensure_ascii=False))"""
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(**connect_params, timeout=15)
-            cmd = "/root/miniforge3/bin/python3 - <<'PY'\n" + remote_script + "\nPY"
+
+            # 使用优化的Python环境检测（优先方案+兼容方案）
+            python_cmd = self.get_python_cmd_with_fallback(ssh)
+
+            if not python_cmd:
+                result['msg'] = '未找到带有yaml模块的Python命令，且无法自动安装'
+                return result
+            
+            cmd = f"{python_cmd} - <<'PY'\n" + remote_script + "\nPY"
             stdin, stdout, stderr = ssh.exec_command(cmd, timeout=180)
             out = stdout.read().decode('utf-8', errors='ignore').strip()
             err = stderr.read().decode('utf-8', errors='ignore').strip()
@@ -4089,9 +4218,195 @@ print(json.dumps(res, ensure_ascii=False))"""
                     
                 except Exception as e:
                     self.root.after(0, lambda: self.log_message(f"云端数据清理失败: {e}"))
-            
+
             threading.Thread(target=clean_thread, daemon=True).start()
-    
+
+    def check_environment(self):
+        """检查云端环境"""
+        if not self.is_connected:
+            messagebox.showerror("错误", "请先测试服务器连接")
+            return
+
+        self.log_message("=" * 60)
+        self.log_message("开始检查云端环境...")
+        self.log_message("=" * 60)
+
+        def check_thread():
+            try:
+                connect_params = {
+                    'hostname': self.server_config['hostname'],
+                    'port': self.server_config['port'],
+                    'username': self.server_config['username'],
+                    'password': self.server_config['password']
+                }
+
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(**connect_params, timeout=15)
+
+                # 使用优化的Python环境检测
+                def log_callback(msg):
+                    self.root.after(0, lambda m=msg: self.log_message(m))
+
+                python_cmd = self.get_python_cmd_with_fallback(ssh, log_func=log_callback)
+
+                if not python_cmd:
+                    self.root.after(0, lambda: self.log_message("✗ 未找到可用的Python环境"))
+                    self.root.after(0, lambda: self._set_env_check_status(False))
+                    ssh.close()
+                    return
+
+                self.root.after(0, lambda: self.log_message(f"✓ Python命令: {python_cmd}"))
+
+                # 检查Python版本
+                stdin, stdout, stderr = ssh.exec_command(f'{python_cmd} --version')
+                version = stdout.read().decode().strip()
+                self.root.after(0, lambda: self.log_message(f"✓ Python版本: {version}"))
+
+                # 检查必要的包
+                required_packages = {
+                    'numpy': 'import numpy; print(numpy.__version__)',
+                    'cv2': 'import cv2; print(cv2.__version__)',
+                    'PIL': 'from PIL import Image; print(Image.__version__)',
+                    'yaml': 'import yaml; print("OK")',
+                    'torch': 'import torch; print(torch.__version__)',
+                    'ultralytics': 'import ultralytics; print(ultralytics.__version__)',
+                    'matplotlib': 'import matplotlib; print(matplotlib.__version__)'
+                }
+
+                missing_packages = []
+                installed_packages = []
+
+                for pkg_name, import_cmd in required_packages.items():
+                    stdin, stdout, stderr = ssh.exec_command(f"{python_cmd} -c '{import_cmd}' 2>&1")
+                    output = stdout.read().decode().strip()
+                    error = stderr.read().decode().strip()
+
+                    # 优先检查错误，如果包含模块未找到错误，则判定为未安装
+                    if error and ('ModuleNotFoundError' in error or 'ImportError' in error):
+                        missing_packages.append(pkg_name)
+                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
+                    elif output and not ('Traceback' in output or 'Error' in output or 'ModuleNotFoundError' in output):
+                        # 输出正常且不包含错误信息
+                        installed_packages.append(f"{pkg_name}: {output}")
+                        self.root.after(0, lambda p=pkg_name, v=output: self.log_message(f"  ✅ {p}: {v}"))
+                    elif output and ('Traceback' in output or 'ModuleNotFoundError' in output):
+                        # 输出中包含错误信息
+                        missing_packages.append(pkg_name)
+                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
+                    else:
+                        # 无输出也无错误，视为未安装
+                        missing_packages.append(pkg_name)
+                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
+
+                # 检查系统库（OpenCV依赖）
+                self.root.after(0, lambda: self.log_message("检查系统库..."))
+                stdin, stdout, stderr = ssh.exec_command("ldconfig -p | grep libGL.so.1")
+                libgl = stdout.read().decode().strip()
+                if libgl:
+                    self.root.after(0, lambda: self.log_message("  ✅ libGL.so.1: 已安装"))
+                else:
+                    self.root.after(0, lambda: self.log_message("  ❌ libGL.so.1: 未安装（OpenCV需要）"))
+                    missing_packages.append("libgl1-mesa-glx")
+
+                ssh.close()
+
+                # 汇总结果
+                self.root.after(0, lambda: self.log_message("-" * 60))
+                if missing_packages:
+                    self.root.after(0, lambda: self.log_message(f"⚠ 发现 {len(missing_packages)} 个问题需要修复"))
+                    self.root.after(0, lambda: self._set_env_check_status(False))
+                else:
+                    self.root.after(0, lambda: self.log_message("✓ 环境检查通过，所有组件正常"))
+                    self.root.after(0, lambda: self._set_env_check_status(True))
+
+                self.root.after(0, lambda: self.log_message("=" * 60))
+
+            except Exception as e:
+                self.root.after(0, lambda: self.log_message(f"✗ 环境检查失败: {e}"))
+                self.root.after(0, lambda: self._set_env_check_status(False))
+
+        threading.Thread(target=check_thread, daemon=True).start()
+
+    def _set_env_check_status(self, status):
+        """设置环境检查状态并更新修复按钮"""
+        self.env_check_status = status
+        if status:
+            # 环境正常，修复按钮保持灰色
+            self.fix_env_button.configure(state="disabled")
+        else:
+            # 环境异常，修复按钮变为可用
+            self.fix_env_button.configure(state="normal")
+
+    def fix_environment(self):
+        """修复云端环境"""
+        if not self.is_connected:
+            messagebox.showerror("错误", "请先测试服务器连接")
+            return
+
+        if self.env_check_status is None:
+            messagebox.showwarning("提示", "请先执行环境检查")
+            return
+
+        if self.env_check_status is True:
+            messagebox.showinfo("提示", "环境正常，无需修复")
+            return
+
+        self.log_message("=" * 60)
+        self.log_message("开始修复云端环境...")
+        self.log_message("=" * 60)
+
+        # 禁用修复按钮，防止重复点击
+        self.fix_env_button.configure(state="disabled")
+
+        def fix_thread():
+            try:
+                connect_params = {
+                    'hostname': self.server_config['hostname'],
+                    'port': self.server_config['port'],
+                    'username': self.server_config['username'],
+                    'password': self.server_config['password']
+                }
+
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(**connect_params, timeout=15)
+
+                python_cmd = self.get_python_cmd_with_fallback(ssh)
+                if not python_cmd:
+                    self.root.after(0, lambda: self.log_message("✗ 未找到Python环境，无法修复"))
+                    return
+
+                # 安装系统库
+                self.root.after(0, lambda: self.log_message("安装系统库..."))
+                stdin, stdout, stderr = ssh.exec_command("apt-get update -qq && apt-get install -y libgl1-mesa-glx libglib2.0-0 -qq")
+                stdout.read()
+                self.root.after(0, lambda: self.log_message("✓ 系统库安装完成"))
+
+                # 安装Python包
+                packages_to_install = ['pyyaml', 'opencv-python', 'ultralytics', 'matplotlib']
+                for pkg in packages_to_install:
+                    self.root.after(0, lambda p=pkg: self.log_message(f"安装 {p}..."))
+                    stdin, stdout, stderr = ssh.exec_command(f"{python_cmd} -m pip install {pkg} -q")
+                    stdout.read()
+                    self.root.after(0, lambda p=pkg: self.log_message(f"✓ {p} 安装完成"))
+
+                ssh.close()
+
+                self.root.after(0, lambda: self.log_message("=" * 60))
+                self.root.after(0, lambda: self.log_message("✓ 环境修复完成，请重新检查环境"))
+                self.root.after(0, lambda: self.log_message("=" * 60))
+
+                # 修复完成后，重置状态为未检查
+                self.root.after(0, lambda: self._set_env_check_status(None))
+
+            except Exception as e:
+                self.root.after(0, lambda: self.log_message(f"✗ 环境修复失败: {e}"))
+                # 修复失败，允许再次尝试
+                self.root.after(0, lambda: self.fix_env_button.configure(state="normal"))
+
+        threading.Thread(target=fix_thread, daemon=True).start()
+
     def start_training(self):
         """开始训练"""
         errors = self.update_all_configs(collect_errors=True)
@@ -4166,25 +4481,36 @@ print(json.dumps(res, ensure_ascii=False))"""
                     connect_params['password'] = self.server_config['password']
                 
                 ssh.connect(**connect_params)
-                
+
+                # 首先获取Python命令
+                self.root.after(0, lambda: self.log_message("获取Python环境..."))
+                python_cmd = self.get_python_cmd_with_fallback(ssh)
+
+                if not python_cmd:
+                    self.root.after(0, lambda: self.log_message("✗ 未找到可用的Python环境，请先执行'检查环境'和'修复环境'"))
+                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 未找到Python环境"))
+                    return
+
+                self.root.after(0, lambda: self.log_message(f"✓ 使用Python: {python_cmd}"))
+
                 # 预下载模型
                 self.root.after(0, lambda: self.log_message("🔄 开始预下载YOLO模型..."))
                 selected_model = self.base_model_var.get()
-                
+
                 def predownload_model():
                     """预下载模型函数"""
                     try:
                         # 检查模型是否已存在
                         stdin, stdout, stderr = ssh.exec_command(f'ls -la /root/{selected_model}')
                         model_check = stdout.read().decode('utf-8')
-                        
+
                         if selected_model in model_check:
                             self.root.after(0, lambda: self.log_message(f"✓ 模型 {selected_model} 已存在，跳过下载"))
                             return True
-                        
+
                         # 模型不存在，开始下载
                         self.root.after(0, lambda: self.log_message(f"📥 开始下载模型 {selected_model}..."))
-                        
+
                         # 使用Python下载模型
                         download_script = f'''
 import os
@@ -4262,7 +4588,7 @@ else:
                         upload_cmd = f"cat > /tmp/predownload_model.py << 'PY'\n{download_script}\nPY"
                         stdin, stdout, stderr = ssh.exec_command(f'cd /root && {upload_cmd}')
                         stdout.channel.recv_exit_status()
-                        stdin, stdout, stderr = ssh.exec_command('cd /root && python3 /tmp/predownload_model.py')
+                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} /tmp/predownload_model.py')
                         download_output = stdout.read().decode('utf-8')
                         download_error = stderr.read().decode('utf-8')
                         
@@ -4331,660 +4657,18 @@ else:
                     self.root.after(0, lambda: self.training_status_var.set("训练失败: 脚本参数不一致"))
                     return
                 self.root.after(0, lambda: self.log_message("✓ 训练脚本参数校验通过"))
-                
-                # 检查Python环境 - 尝试多种Python命令
-                self.root.after(0, lambda: self.log_message("检查Python环境..."))
-                
-                # 检查可用的Python命令
-                python_cmd = None
-                # 优先检查 miniforge3/anaconda 环境，它通常自带编译好的 PyTorch
-                for cmd in ['/root/miniforge3/bin/python3', '/root/anaconda3/bin/python3', '/root/miniconda3/bin/python3', 'python3', 'python', '/usr/bin/python3', '/usr/bin/python']:
-                    stdin, stdout, stderr = ssh.exec_command(f'which {cmd} && {cmd} --version')
-                    result = stdout.read().decode('utf-8')
-                    if result and 'Python' in result:
-                        python_cmd = cmd
-                        self.root.after(0, lambda: self.log_message(f"✓ 找到Python命令: {cmd}"))
-                        self.root.after(0, lambda: self.log_message(f"Python版本: {result.strip()}"))
-                        break
-                
-                if not python_cmd:
-                    self.root.after(0, lambda: self.log_message("✗ 未找到可用的Python命令"))
-                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 未找到Python"))
-                    return
-                
-                # 训练前强制校正远程dataset.yaml，避免路径误指向/root/datasets
+
+                # 训练前强制校正远程dataset.yaml
                 self.root.after(0, lambda: self.log_message("校正云端dataset.yaml路径..."))
                 yaml_fixed = self.normalize_remote_dataset_yaml(ssh, python_cmd)
                 if not yaml_fixed:
                     self.root.after(0, lambda: self.log_message("✗ 云端dataset.yaml校正失败，请先检查数据集上传是否完整"))
                     self.root.after(0, lambda: self.training_status_var.set("训练失败: dataset.yaml异常"))
                     return
-                
-                # 检查必要的包
-                self.root.after(0, lambda: self.log_message("检查必要的Python包..."))
-                
-                # 检查必要的包
-                self.root.after(0, lambda: self.log_message("检查必要的Python包..."))
-                
-                # 检查核心包 - 改进的包检查策略
-                self.root.after(0, lambda: self.log_message("🔍 检查Python环境和已安装包..."))
-                
-                # 首先检查Python版本和pip
-                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} --version && pip3 --version')
-                python_info = stdout.read().decode('utf-8')
-                if python_info:
-                    self.root.after(0, lambda: self.log_message(f"Python环境: {python_info.strip()}"))
-                
-                # 定义包检查策略 - 分为系统包和需要安装的包
-                system_packages = {
-                    'numpy': 'import numpy; print("NumPy: " + numpy.__version__)',
-                    'cv2': 'import cv2; print("OpenCV: " + cv2.__version__)',
-                    'PIL': 'import PIL; print("Pillow: " + PIL.__version__)',
-                    'yaml': 'import yaml; print("PyYAML: OK")'
-                }
-                
-                pip_packages = {
-                    'torch': 'import torch; print("PyTorch: " + torch.__version__)',
-                    'ultralytics': 'import ultralytics; print("Ultralytics: " + ultralytics.__version__)',
-                    'matplotlib': 'import matplotlib; print("Matplotlib: " + matplotlib.__version__)'
-                }
-                
-                # 检查系统包
-                missing_packages = []
-                available_packages = []
-                
-                self.root.after(0, lambda: self.log_message("检查系统预装包..."))
-                for package_name, import_cmd in system_packages.items():
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c \'{import_cmd}\'')
-                    package_info = stdout.read().decode('utf-8').strip()
-                    package_errors = stderr.read().decode('utf-8').strip()
-                    
-                    if package_errors and 'ModuleNotFoundError' in package_errors:
-                        self.root.after(0, lambda pkg=package_name: self.log_message(f"  ❌ {pkg}: 未安装"))
-                        missing_packages.append(package_name)
-                    elif package_info:
-                        self.root.after(0, lambda info=package_info: self.log_message(f"  ✅ {info}"))
-                        available_packages.append(package_info)
-                
-                # 检查需要pip安装的包
-                self.root.after(0, lambda: self.log_message("检查深度学习包..."))
-                pip_missing = []
-                for package_name, import_cmd in pip_packages.items():
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c \'{import_cmd}\'')
-                    package_info = stdout.read().decode('utf-8').strip()
-                    package_errors = stderr.read().decode('utf-8').strip()
-                    
-                    if package_errors and 'ModuleNotFoundError' in package_errors:
-                        self.root.after(0, lambda pkg=package_name: self.log_message(f"  ❌ {pkg}: 需要安装"))
-                        pip_missing.append(package_name)
-                    elif package_info:
-                        self.root.after(0, lambda info=package_info: self.log_message(f"  ✅ {info}"))
-                        available_packages.append(package_info)
-                
-                if available_packages:
-                    self.root.after(0, lambda: self.log_message("✓ 已安装的包:"))
-                    for pkg_info in available_packages:
-                        self.root.after(0, lambda info=pkg_info: self.log_message(f"  - {info}"))
-                
-                # 处理系统包缺失（如果有的话）
-                if missing_packages:
-                    self.root.after(0, lambda: self.log_message(f"⚠ 检测到缺失的系统包: {', '.join(missing_packages)}"))
-                    self.root.after(0, lambda: self.log_message("开始安装缺失的系统包..."))
-                    
-                    # 系统包映射
-                    system_package_map = {
-                        'numpy': 'python3-numpy',
-                        'cv2': 'python3-opencv libgl1-mesa-glx libglib2.0-0',
-                        'PIL': 'python3-pil',
-                        'yaml': 'python3-yaml'
-                    }
-                    
-                    # 只安装真正缺失的系统包
-                    packages_to_install = []
-                    for missing_pkg in missing_packages:
-                        if missing_pkg in system_package_map:
-                            packages_to_install.append(system_package_map[missing_pkg])
-                    
-                    if packages_to_install:
-                        # 更新包列表
-                        self.root.after(0, lambda: self.log_message("更新系统包列表..."))
-                        stdin, stdout, stderr = ssh.exec_command('cd /root && apt update')
-                        update_output = stdout.read().decode('utf-8')
-                        update_error = stderr.read().decode('utf-8')
-                        
-                        if update_error and 'error' in update_error.lower():
-                            self.root.after(0, lambda err=update_error: self.log_message(f"包列表更新警告: {err[:200]}"))
-                        else:
-                            self.root.after(0, lambda: self.log_message("✓ 包列表更新完成"))
-                        
-                        # 安装缺失的系统包
-                        for pkg in packages_to_install:
-                            self.root.after(0, lambda p=pkg: self.log_message(f"安装 {p}..."))
-                            stdin, stdout, stderr = ssh.exec_command(f'cd /root && apt install -y {pkg}')
-                            install_output = stdout.read().decode('utf-8')
-                            install_error = stderr.read().decode('utf-8')
-                            
-                            if install_error and any(keyword in install_error.lower() for keyword in ['error', 'failed']):
-                                self.root.after(0, lambda p=pkg, err=install_error: self.log_message(f"✗ {p} 安装失败: {err[:100]}"))
-                            else:
-                                self.root.after(0, lambda p=pkg: self.log_message(f"✓ {p} 安装完成"))
-                
-                # 处理pip包安装（torch和ultralytics）
-                if pip_missing:
-                    self.root.after(0, lambda: self.log_message(f"需要安装的深度学习包: {', '.join(pip_missing)}"))
-                    self.root.after(0, lambda: self.log_message("使用pip安装PyTorch和ultralytics..."))
-                    
-                    # 首先诊断Python环境和pip配置
-                    self.root.after(0, lambda: self.log_message("🔍 诊断Python环境和pip配置..."))
-                    
-                    # 检查Python和pip的一致性
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(f\\"Python executable: {sys.executable}\\"); print(f\\"Python version: {sys.version}\\"); print(f\\"Python path: {sys.path}\\")"')
-                    python_env_info = stdout.read().decode('utf-8').strip()
-                    self.root.after(0, lambda info=python_env_info: self.log_message(f"Python环境信息:\n{info}"))
-                    
-                    # 检查pip安装路径
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -m pip show pip')
-                    pip_info = stdout.read().decode('utf-8').strip()
-                    if pip_info:
-                        self.root.after(0, lambda info=pip_info: self.log_message(f"Pip信息:\n{info[:300]}..."))
-                    
-                    # 检查远程服务器Python版本并选择兼容的包版本
-                    python_version_cmd = f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major) + \\".\\\" + str(sys.version_info.minor))"'
-                    stdin, stdout, stderr = ssh.exec_command(python_version_cmd)
-                    python_version = stdout.read().decode('utf-8').strip()
-                    self.root.after(0, lambda ver=python_version: self.log_message(f"🐍 远程服务器Python版本: {ver}"))
-                    
-                    # 如果检测到Python 3.8，尝试升级到3.13.7或3.9+
-                    if python_version == "3.8":
-                        self.root.after(0, lambda: self.log_message("⚠️ 检测到Python 3.8，建议升级到3.13.7或3.9+以获得更好的兼容性"))
-                        self.root.after(0, lambda: self.log_message("🔄 尝试升级Python版本..."))
-                        
-                        try:
-                            upgraded_python_cmd = self.upgrade_python_version(ssh, python_cmd)
-                            if upgraded_python_cmd:
-                                python_cmd = upgraded_python_cmd
-                                self.root.after(0, lambda: self.log_message("✅ Python版本升级成功"))
-                                
-                                # 重新检查升级后的Python版本
-                                python_version_cmd = f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major) + \\".\\\" + str(sys.version_info.minor))"'
-                                stdin, stdout, stderr = ssh.exec_command(python_version_cmd)
-                                python_version = stdout.read().decode('utf-8').strip()
-                                self.root.after(0, lambda ver=python_version: self.log_message(f"🐍 升级后Python版本: {ver}"))
-                            else:
-                                self.root.after(0, lambda: self.log_message("⚠️ Python版本升级失败，继续使用当前版本"))
-                        except Exception as e:
-                            self.root.after(0, lambda err=str(e): self.log_message(f"❌ Python版本升级过程中出现错误: {err}"))
-                            self.root.after(0, lambda: self.log_message("继续使用当前Python版本进行包安装"))
-                    
-                    constraints_path = "/tmp/pip_constraints.txt"
-                    ssh.exec_command(f"cd /root && printf 'numpy<2\n' > {constraints_path}")
-                    pip_constraint = f"-c {constraints_path}"
-                    
-                    # 定义pip安装命令（确保使用相同的Python环境）
-                    pip_install_commands = []
-                    # 处理NumPy兼容性
-                    try:
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy; print(numpy.__version__)"')
-                        numpy_version = stdout.read().decode('utf-8').strip()
-                        if numpy_version and numpy_version.split('.')[0] >= '2' and python_version in ["3.8", "3.9"]:
-                            fix_uninstall = f'{python_cmd} -m pip uninstall -y numpy || true'
-                            fix_install = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'
-                            pip_install_commands.append(("卸载不兼容numpy", fix_uninstall))
-                            pip_install_commands.append(("安装兼容numpy", fix_install))
-                            self.root.after(0, lambda v=numpy_version: self.log_message(f"⚙ 检测到NumPy {v} 与Python {python_version}不兼容，已执行兼容修复"))
-                    except Exception as _:
-                        pass
-                    if 'numpy' in missing_packages:
-                        pip_install_commands.append(("安装numpy", f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'))
-                    # OpenCV 与 NumPy 兼容性：当 NumPy 选用 1.26.x 时，固定 OpenCV 版本
-                    pip_install_commands.append(("安装兼容的opencv-python", f"{python_cmd} -m pip install --force-reinstall --no-cache-dir 'opencv-python==4.7.0.72' {pip_constraint}"))
-                    if 'torch' in pip_missing:
-                        # 检测GPU
-                        has_gpu = False
-                        try:
-                            stdin, stdout, stderr = ssh.exec_command('nvidia-smi -L')
-                            gpu_list = stdout.read().decode('utf-8').strip()
-                            has_gpu = bool(gpu_list)
-                        except Exception:
-                            has_gpu = False
-                        # 安装兼容的networkx版本
-                        networkx_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "networkx==2.8.8" {pip_constraint}'
-                        pip_install_commands.append(("安装兼容的networkx", networkx_cmd))
-                        if has_gpu:
-                            # 优先使用 cu121；如失败后续回退在验证阶段处理
-                            cuda_index = 'https://download.pytorch.org/whl/cu121'
-                            if python_version in ["3.8", "3.9"]:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index} {pip_constraint}'
-                            else:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index} {pip_constraint}'
-                            pip_install_commands.append(("安装PyTorch(CUDA)", torch_cmd))
-                            self.root.after(0, lambda: self.log_message("⚙ 检测到GPU，安装CUDA版PyTorch"))
-                        else:
-                            if python_version in ["3.8", "3.9"]:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.0.1" "torchvision==0.15.2" "torchaudio==2.0.2" --index-url https://download.pytorch.org/whl/cpu {pip_constraint}'
-                                self.root.after(0, lambda: self.log_message(f"🔧 使用稳定的PyTorch 2.0.1(CPU)（兼容Python {python_version}）"))
-                            else:
-                                torch_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url https://download.pytorch.org/whl/cpu {pip_constraint}'
-                                self.root.after(0, lambda: self.log_message(f"🚀 使用稳定的PyTorch 2.1.0(CPU)（适用于Python {python_version}）"))
-                            pip_install_commands.append(("安装PyTorch(CPU)", torch_cmd))
-                    
-                    if 'ultralytics' in pip_missing:
-                        # 为了确保稳定性，Python 3.8和3.9都使用经过验证的兼容版本
-                        if python_version in ["3.8", "3.9"]:
-                            # 使用稳定的ultralytics 8.0.196版本，兼容Python 3.8和3.9
-                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.0.196" {pip_constraint}'
-                            self.root.after(0, lambda: self.log_message(f"🔧 使用稳定的ultralytics 8.0.196版本（兼容Python {python_version}）"))
-                        else:
-                            # 对于Python 3.10+，使用较新但稳定的版本
-                            ultralytics_cmd = f'timeout 90 {python_cmd} -m pip install --timeout 20 -i https://pypi.tuna.tsinghua.edu.cn/simple "ultralytics==8.1.0" {pip_constraint}'
-                            self.root.after(0, lambda: self.log_message(f"🚀 使用稳定的ultralytics 8.1.0版本（适用于Python {python_version}）"))
-                        pip_install_commands.append(("安装ultralytics", ultralytics_cmd))
-                    
-                    if 'matplotlib' in pip_missing:
-                        # 安装兼容的matplotlib版本，避免循环导入问题
-                        if python_version in ["3.8", "3.9"]:
-                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.7.5" {pip_constraint}'
-                            self.root.after(0, lambda: self.log_message(f"🔧 安装matplotlib 3.7.5（兼容Python {python_version} 与NumPy 1.26）"))
-                        else:
-                            matplotlib_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.8.4" {pip_constraint}'
-                            self.root.after(0, lambda: self.log_message(f"🚀 安装matplotlib 3.8.4（适用于Python {python_version}）"))
-                        
-                        # 清理用户站点中残留的matplotlib，避免与系统site-packages冲突
-                        user_cleanup_cmds = [
-                            'rm -rf /root/.local/lib/python3.9/site-packages/matplotlib || true',
-                            'rm -rf /root/.local/lib/python3.9/site-packages/matplotlib-* || true'
-                        ]
-                        for c in user_cleanup_cmds:
-                            pip_install_commands.append(("清理用户站点matplotlib", c))
-                        pip_install_commands.append(("安装matplotlib", matplotlib_cmd))
-                    
-                    # 执行pip包安装
-                    if pip_install_commands:
-                        self.root.after(0, lambda: self.log_message("开始安装深度学习包..."))
-                        
-                        # 如果需要安装matplotlib，先清理可能存在的冲突包
-                        if 'matplotlib' in pip_missing:
-                            self.root.after(0, lambda: self.log_message("🧹 彻底清理matplotlib包冲突..."))
-                            
-                            # 1. 强制卸载所有系统matplotlib相关包
-                            system_cleanup_cmds = [
-                                'apt remove -y python3-matplotlib python3-matplotlib-dev python3-matplotlib-data || true',
-                                'apt purge -y python3-matplotlib python3-matplotlib-dev python3-matplotlib-data || true',
-                                'apt autoremove -y || true',
-                                'apt autoclean || true'
-                            ]
-                            
-                            for cleanup_cmd in system_cleanup_cmds:
-                                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {cleanup_cmd}')
-                                stdout.channel.recv_exit_status()  # 等待完成
-                            
-                            # 2. 强制清理pip中的matplotlib及相关包
-                            pip_cleanup_cmds = [
-                                f'{python_cmd} -m pip uninstall -y matplotlib || true',
-                                f'{python_cmd} -m pip uninstall -y matplotlib-base || true',
-                                f'{python_cmd} -m pip uninstall -y matplotlib-inline || true',
-                                f'{python_cmd} -m pip cache purge || true'
-                            ]
-                            
-                            for pip_cleanup_cmd in pip_cleanup_cmds:
-                                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {pip_cleanup_cmd}')
-                                stdout.channel.recv_exit_status()  # 等待完成
-                            
-                            # 3. 手动删除残留的matplotlib目录
-                            manual_cleanup_cmds = [
-                                'rm -rf /usr/lib/python3/dist-packages/matplotlib* || true',
-                                'rm -rf /usr/lib/python3/dist-packages/mpl_toolkits* || true',
-                                'rm -rf /usr/local/lib/python3.9/dist-packages/matplotlib* || true',
-                                'rm -rf /usr/local/lib/python3.9/dist-packages/mpl_toolkits* || true',
-                            ]
-                            
-                            for manual_cmd in manual_cleanup_cmds:
-                                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {manual_cmd}')
-                                stdout.channel.recv_exit_status()  # 等待完成
-                            
-                            # 4. 临时重命名系统Python包目录，强制禁用系统包
-                            system_disable_cmds = [
-                                'mv /usr/lib/python3/dist-packages /usr/lib/python3/dist-packages.disabled || true',
-                                'mkdir -p /usr/lib/python3/dist-packages || true',  # 创建空目录避免错误
-                            ]
-                            
-                            for disable_cmd in system_disable_cmds:
-                                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {disable_cmd}')
-                                stdout.channel.recv_exit_status()  # 等待完成
-                            
-                        self.root.after(0, lambda: self.log_message("✓ matplotlib彻底清理完成，系统包路径已禁用"))
-                        
-                        # 若服务器存在GPU但当前PyTorch为CPU版本，添加CUDA版重装命令
-                        try:
-                            stdin, stdout, stderr = ssh.exec_command('nvidia-smi -L')
-                            gpu_list = stdout.read().decode('utf-8').strip()
-                            has_gpu = bool(gpu_list)
-                        except Exception:
-                            has_gpu = False
-                        if has_gpu:
-                            try:
-                                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import torch, json; print(json.dumps({{\"compiled\": (torch.version.cuda is not None), \"torch_ver\": str(torch.__version__)}}))"')
-                                torch_cuda_info = stdout.read().decode('utf-8').strip()
-                            except Exception:
-                                torch_cuda_info = ''
-                            need_cuda_reinstall = True
-                            try:
-                                import json as _json
-                                obj = _json.loads(torch_cuda_info) if torch_cuda_info else {}
-                                has_cuda_build = False
-                                try:
-                                    has_cuda_build = any(('PyTorch:' in s) and ('+cu' in s) for s in available_packages)
-                                except Exception:
-                                    has_cuda_build = False
-                                need_cuda_reinstall = (not bool(obj.get('compiled'))) and (not has_cuda_build)
-                            except Exception:
-                                need_cuda_reinstall = True
-                            if need_cuda_reinstall:
-                                cuda_index = 'https://download.pytorch.org/whl/cu121'
-                                if python_version in ["3.8", "3.9"]:
-                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index} {pip_constraint}'
-                                else:
-                                    reinstall_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index} {pip_constraint}'
-                                pip_install_commands.append(("重装PyTorch为CUDA版", reinstall_cmd))
-                                self.root.after(0, lambda: self.log_message("🔁 检测到GPU但PyTorch不支持CUDA，追加CUDA版重装"))
-                            else:
-                                self.root.after(0, lambda: self.log_message("✓ 检测到CUDA版PyTorch，无需重装"))
-                        
-                        # 在执行安装前，若服务器存在GPU但当前PyTorch为CPU版本，追加CUDA版重装命令
-                        pass
 
-                        # 执行pip安装命令
-                        for cmd_desc, cmd in pip_install_commands:
-                            self.root.after(0, lambda desc=cmd_desc: self.log_message(f"执行: {desc}"))
-                            self.root.after(0, lambda: self.log_message("⏳ 正在下载和安装，请耐心等待..."))
-                            
-                            # 添加详细的pip命令，包含进度显示
-                            enhanced_cmd = cmd + " --progress-bar on --verbose"
-                            
-                            # 简化安装命令，避免复杂的实时读取
-                            self.root.after(0, lambda: self.log_message(f"执行安装命令: {enhanced_cmd}"))
-                            
-                            # 使用简单的阻塞执行，避免复杂的异步读取问题
-                            stdin, stdout, stderr = ssh.exec_command(f'cd /root && {enhanced_cmd}')
-                            
-                            # 等待命令完成
-                            exit_status = stdout.channel.recv_exit_status()
-                            
-                            # 读取完整输出
-                            install_output = stdout.read().decode('utf-8', errors='ignore')
-                            install_errors = stderr.read().decode('utf-8', errors='ignore')
-                            
-                            # 显示安装结果
-                            self.root.after(0, lambda: self.log_message(f"安装命令退出状态: {exit_status}"))
-                            
-                            if install_output:
-                                # 显示重要的安装信息
-                                output_lines = install_output.split('\n')
-                                for line in output_lines:
-                                    if line.strip():
-                                        if any(keyword in line for keyword in ['Successfully installed', 'Downloading', 'Installing', 'Using cached']):
-                                            self.root.after(0, lambda l=line.strip(): self.log_message(f"📦 {l}"))
-                                        elif 'ERROR' in line or 'Failed' in line:
-                                            self.root.after(0, lambda l=line.strip(): self.log_message(f"❌ {l}"))
-                            
-                            if install_errors:
-                                # 显示错误信息（过滤警告）
-                                error_lines = install_errors.split('\n')
-                                for line in error_lines:
-                                    if line.strip() and 'WARNING' not in line and 'warning' not in line.lower():
-                                        self.root.after(0, lambda l=line.strip(): self.log_message(f"⚠️ {l}"))
-                            
-                            # 检查安装是否成功 - 基于退出状态和输出内容
-                            success_indicators = [
-                                "Successfully installed",
-                                "Requirement already satisfied"
-                            ]
-                            
-                            error_indicators = [
-                                "ERROR",
-                                "Failed",
-                                "Could not find",
-                                "No matching distribution",
-                                "Connection error",
-                                "Timeout"
-                            ]
-                            
-                            has_success = any(indicator in install_output for indicator in success_indicators)
-                            has_error = any(indicator in install_output or indicator in install_errors for indicator in error_indicators)
-                            
-                            # 综合判断安装是否成功
-                            install_success = (exit_status == 0) and (has_success or not has_error)
-                            
-                            if install_success:
-                                self.root.after(0, lambda desc=cmd_desc: self.log_message(f"✓ {desc} 完成"))
+                self.root.after(0, lambda: self.log_message("✓ 准备开始训练..."))
+
                                 
-                                # 显示关键安装信息
-                                if install_output:
-                                    success_lines = [line for line in install_output.split('\n') if any(ind in line for ind in success_indicators)]
-                                    if success_lines:
-                                        self.root.after(0, lambda lines=success_lines[-1]: self.log_message(f"📦 {lines}"))
-                            else:
-                                self.root.after(0, lambda desc=cmd_desc: self.log_message(f"✗ {desc} 失败 (退出状态: {exit_status})"))
-                                
-                                # 显示错误信息
-                                if install_errors:
-                                    self.root.after(0, lambda err=install_errors: self.log_message(f"❌ 错误: {err.strip()[:300]}"))
-                                if install_output and has_error:
-                                    error_lines = [line for line in install_output.split('\n') if any(err in line for err in error_indicators)]
-                                    if error_lines:
-                                        self.root.after(0, lambda lines=error_lines[0]: self.log_message(f"❌ 安装错误: {lines}"))
-                                
-                                # 尝试从本地Environment_package目录安装
-                                self.root.after(0, lambda: self.log_message(f"🔄 网络安装失败，尝试从本地包安装..."))
-                                local_install_success = self.try_local_package_install(ssh, cmd_desc, python_cmd)
-                                
-                                if local_install_success:
-                                    self.root.after(0, lambda desc=cmd_desc: self.log_message(f"✅ {desc} 本地安装成功"))
-                                    install_success = True  # 更新安装状态
-                                else:
-                                    self.root.after(0, lambda desc=cmd_desc: self.log_message(f"❌ {desc} 本地安装也失败"))
-                                
-                                # 立即测试包是否可以导入 - 只在安装成功时进行
-                                if install_success:
-                                    package_name = None
-                                    if "PyTorch" in cmd_desc:
-                                        package_name = "torch"
-                                    elif "ultralytics" in cmd_desc:
-                                        package_name = "ultralytics"
-                                    
-                                    if package_name and package_name in pip_packages:
-                                        test_cmd = pip_packages[package_name].split(';')[0]  # 只取import部分
-                                        escaped_test_cmd = test_cmd.replace('"', '\\"')
-                                        test_full_cmd = f'cd /root && {python_cmd} -c "{escaped_test_cmd}"'
-                                        
-                                        stdin, stdout, stderr = ssh.exec_command(test_full_cmd)
-                                        test_exit_status = stdout.channel.recv_exit_status()
-                                        test_output = stdout.read().decode('utf-8').strip()
-                                        test_error = stderr.read().decode('utf-8').strip()
-                                        
-                                        if test_exit_status == 0 and test_output and not test_error:
-                                            self.root.after(0, lambda p=package_name, out=test_output: self.log_message(f"✅ {p} 导入测试成功: {out}"))
-                                        else:
-                                            self.root.after(0, lambda p=package_name, err=test_error: self.log_message(f"⚠ {p} 安装后导入测试失败: {err[:100]}"))
-                        
-                        self.root.after(0, lambda: self.log_message("🔧 锁定NumPy版本避免2.x冲突..."))
-                        numpy_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4" {pip_constraint}'
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {numpy_fix_cmd} --progress-bar on --verbose')
-                        stdout.channel.recv_exit_status()
-                        
-                        if python_version in ["3.8", "3.9"]:
-                            matplotlib_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.7.5" {pip_constraint}'
-                        else:
-                            matplotlib_fix_cmd = f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "matplotlib==3.8.4" {pip_constraint}'
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {matplotlib_fix_cmd} --progress-bar on --verbose')
-                        stdout.channel.recv_exit_status()
-                        
-                        # 强制刷新Python模块缓存
-                        self.root.after(0, lambda: self.log_message("🔄 刷新Python模块缓存..."))
-                        cache_refresh_cmd = f'cd /root && {python_cmd} -c "import sys; import importlib; importlib.invalidate_caches(); print(\\"模块缓存已刷新\\")"'
-                        stdin, stdout, stderr = ssh.exec_command(cache_refresh_cmd)
-                        cache_output = stdout.read().decode('utf-8').strip()
-                        if cache_output:
-                            self.root.after(0, lambda out=cache_output: self.log_message(f"✓ {out}"))
-                        
-                        # 验证安装的深度学习包 - 增强版验证
-                        self.root.after(0, lambda: self.log_message("🔍 验证深度学习包安装结果..."))
-                        
-                        # 首先检查包是否在site-packages中
-                        for package in pip_missing:
-                            if package in pip_packages:
-                                # 检查包是否在site-packages中
-                                check_installed_cmd = f'cd /root && {python_cmd} -m pip show {package}'
-                                stdin, stdout, stderr = ssh.exec_command(check_installed_cmd)
-                                pip_show_output = stdout.read().decode('utf-8').strip()
-                                pip_show_error = stderr.read().decode('utf-8').strip()
-                                
-                                if pip_show_output:
-                                    self.root.after(0, lambda p=package, out=pip_show_output: self.log_message(f"📦 {p} pip信息:\n{out[:200]}..."))
-                                else:
-                                    self.root.after(0, lambda p=package, err=pip_show_error: self.log_message(f"⚠ {p} pip show失败: {err[:100]}"))
-                                
-                                # 尝试导入验证
-                                verify_cmd = pip_packages[package]
-                                # 使用双引号包围Python命令，并转义内部双引号
-                                escaped_cmd = verify_cmd.replace('"', '\\"')
-                                full_cmd = f'cd /root && {python_cmd} -c "{escaped_cmd}"'
-                                
-                                self.root.after(0, lambda p=package, cmd=full_cmd: self.log_message(f"执行验证命令: {cmd}"))
-                                
-                                stdin, stdout, stderr = ssh.exec_command(full_cmd)
-                                verify_output = stdout.read().decode('utf-8').strip()
-                                verify_error = stderr.read().decode('utf-8').strip()
-                                
-                                if verify_error:
-                                    self.root.after(0, lambda p=package, err=verify_error: self.log_message(f"✗ {p} 验证失败: {err[:200]}"))
-                                    
-                                    # 如果验证失败，尝试诊断问题
-                                    self.root.after(0, lambda p=package: self.log_message(f"🔧 诊断 {p} 安装问题..."))
-                                    
-                                    # 检查包文件是否存在
-                                    find_package_cmd = f'cd /root && find /usr/local/lib/python*/site-packages -name "{package}*" -type d 2>/dev/null || find /root/.local/lib/python*/site-packages -name "{package}*" -type d 2>/dev/null'
-                                    stdin, stdout, stderr = ssh.exec_command(find_package_cmd)
-                                    find_output = stdout.read().decode('utf-8').strip()
-                                    
-                                    if find_output:
-                                        self.root.after(0, lambda p=package, paths=find_output: self.log_message(f"📁 找到 {p} 包文件: {paths}"))
-                                    else:
-                                        self.root.after(0, lambda p=package: self.log_message(f"❌ 未找到 {p} 包文件"))
-                                        
-                                elif verify_output:
-                                    self.root.after(0, lambda p=package, out=verify_output: self.log_message(f"✓ {p} 验证成功: {out}"))
-                                else:
-                                    self.root.after(0, lambda p=package: self.log_message(f"⚠ {p} 验证无输出，可能安装有问题"))
-                else:
-                    self.root.after(0, lambda: self.log_message("✅ 所有深度学习包都已安装"))
-                    
-                    # 诊断Python环境
-                    self.root.after(0, lambda: self.log_message("诊断Python环境..."))
-                    
-                    # 检查Python路径和pip路径
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && which {python_cmd}')
-                    python_path = stdout.read().decode('utf-8').strip()
-                    
-                    # 检查多种pip命令
-                    pip_commands = [f'{python_cmd} -m pip', 'pip3', 'pip']
-                    pip_info = ""
-                    working_pip_cmd = None
-                    
-                    for pip_cmd in pip_commands:
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {pip_cmd} --version')
-                        output = stdout.read().decode('utf-8').strip()
-                        error = stderr.read().decode('utf-8').strip()
-                        
-                        if output and not error:
-                            pip_info = output
-                            working_pip_cmd = pip_cmd
-                            break
-                        elif error:
-                            self.root.after(0, lambda cmd=pip_cmd, err=error: self.log_message(f"尝试 {cmd}: {err[:100]}"))
-                    
-                    # 如果没有找到pip，尝试安装
-                    if not working_pip_cmd:
-                        self.root.after(0, lambda: self.log_message("未找到pip，尝试安装..."))
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && {python_cmd} get-pip.py')
-                        install_output = stdout.read().decode('utf-8')
-                        install_error = stderr.read().decode('utf-8')
-                        
-                        if install_error:
-                            self.root.after(0, lambda err=install_error: self.log_message(f"pip安装失败: {err[:200]}"))
-                        else:
-                            working_pip_cmd = f'{python_cmd} -m pip'
-                            self.root.after(0, lambda: self.log_message("pip安装成功"))
-                    
-                    # 训练前兼容性修复：若NumPy为2.x，降级并固定OpenCV版本以避免ABI不兼容
-                    try:
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy; print(numpy.__version__)"')
-                        numpy_version = stdout.read().decode('utf-8').strip()
-                        if numpy_version and numpy_version.split('.')[0] >= '2':
-                            self.root.after(0, lambda v=numpy_version: self.log_message(f"⚠ 检测到NumPy {v} 可能与Torch/CV2不兼容，执行兼容修复..."))
-                            for c in [
-                                f'{python_cmd} -m pip uninstall -y numpy || true',
-                                f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4"',
-                                f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "opencv-python==4.7.0.72"'
-                            ]:
-                                ssh.exec_command(f'cd /root && {c}')[1].channel.recv_exit_status()
-                            stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy, cv2; print(numpy.__version__); print(cv2.__version__)"')
-                            verify_out = stdout.read().decode('utf-8').strip()
-                            self.root.after(0, lambda o=verify_out: self.log_message(f"✓ 兼容修复完成: {o}"))
-                    except Exception:
-                        pass
-                    
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(sys.path)"')
-                    sys_path = stdout.read().decode('utf-8').strip()
-                    
-                    self.root.after(0, lambda: self.log_message(f"Python路径: {python_path}"))
-                    self.root.after(0, lambda: self.log_message(f"Pip信息: {pip_info}"))
-                    self.root.after(0, lambda: self.log_message(f"工作的pip命令: {working_pip_cmd}"))
-                    self.root.after(0, lambda: self.log_message(f"Python模块搜索路径: {sys_path}"))
-                    
-                    # 重新检查包安装情况
-                    self.root.after(0, lambda: self.log_message("重新检查包安装情况..."))
-                    
-                    # 重新检查所有包
-                    final_missing = []
-                    final_available = []
-                    final_missing_details = {}
-                    
-                    for package_name, import_cmd in pip_packages.items():
-                        escaped_cmd = import_cmd.replace('"', '\\"')
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "{escaped_cmd}"')
-                        verify_out = stdout.read().decode('utf-8').strip()
-                        verify_err = stderr.read().decode('utf-8').strip()
-                        
-                        if verify_err and ('ModuleNotFoundError' in verify_err or 'ImportError' in verify_err):
-                            final_missing.append(package_name)
-                            final_missing_details[package_name] = verify_err
-                        elif verify_out:
-                            final_available.append(verify_out)
-                    
-                    if final_available:
-                        self.root.after(0, lambda: self.log_message("✓ 最终已安装的包:"))
-                        for pkg_info in final_available:
-                            self.root.after(0, lambda info=pkg_info: self.log_message(f"  - {info}"))
-                    
-                    package_info = '\n'.join(final_available) if final_available else ''
-                    package_errors = ''
-                
-                if package_info:
-                    self.root.after(0, lambda: self.log_message(f"✓ 包检查成功: {package_info.strip()}"))
-                if 'final_missing' in locals() and final_missing:
-                    self.root.after(0, lambda m=', '.join(final_missing): self.log_message(f"✗ 包安装失败，无法继续训练，仍缺失: {m}"))
-                    for k, v in final_missing_details.items():
-                        self.root.after(0, lambda p=k, e=v: self.log_message(f"  - {p} 导入错误: {e[:260]}"))
-                    self.root.after(0, lambda: self.log_message("🔧 建议的解决方案:"))
-                    self.root.after(0, lambda: self.log_message("  1. 点击'本地安装包'上传对应whl（优先 matplotlib/opencv/ultralytics）"))
-                    self.root.after(0, lambda: self.log_message("  2. 确认当前训练使用同一个Python解释器与pip"))
-                    self.root.after(0, lambda: self.log_message("  3. 先执行一次清理缓存后重装: python -m pip cache purge"))
-                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 缺少必要的Python包"))
-                    return
-                elif package_errors:
-                    self.root.after(0, lambda: self.log_message(f"⚠ 包检查警告: {package_errors.strip()}"))
-                
                 # 使用nohup在后台执行训练脚本，并将输出重定向到日志文件
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 log_file = f'/root/training_log_{timestamp}.txt'
@@ -5004,23 +4688,40 @@ else:
                 gpu_list = stdout.read().decode('utf-8').strip()
                 has_gpu = bool(gpu_list)
                 if has_gpu:
-                    stdin, stdout, stderr = ssh.exec_command(
-                        f'cd /root && {python_cmd} -c "import torch, json; info={{\"available\": bool(torch.cuda.is_available()), \"compiled\": (torch.version.cuda is not None), \"ver\": str(torch.version.cuda), \"torch_ver\": str(torch.__version__)}}; print(json.dumps(info))"'
-                    )
-                    torch_info_raw = stdout.read().decode('utf-8').strip()
-                    need_cuda = True
-                    try:
-                        import json as _json
-                        info_obj = _json.loads(torch_info_raw) if torch_info_raw else {}
-                        has_cuda_build = False
-                        try:
-                            has_cuda_build = any(('PyTorch:' in s) and ('+cu' in s) for s in available_packages)
-                        except Exception:
-                            has_cuda_build = False
-                        need_cuda = (not bool(info_obj.get('compiled'))) and (not has_cuda_build)
-                        self.root.after(0, lambda: self.log_message(f"PyTorch CUDA状态: available={info_obj.get('available')} compiled={info_obj.get('compiled')} ver={info_obj.get('ver')}"))
-                    except Exception:
-                        need_cuda = True
+                    # 检测PyTorch CUDA状态
+                    cuda_check_cmd = f'{python_cmd} -c "import torch; print(f\\"cuda_available={{torch.cuda.is_available()}}\\"); print(f\\"cuda_version={{torch.version.cuda}}\\"); print(f\\"torch_version={{torch.__version__}}\\")"'
+                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {cuda_check_cmd}')
+                    cuda_check_output = stdout.read().decode('utf-8').strip()
+                    cuda_check_error = stderr.read().decode('utf-8').strip()
+
+                    self.root.after(0, lambda: self.log_message(f"PyTorch CUDA检测输出: {cuda_check_output}"))
+                    if cuda_check_error:
+                        self.root.after(0, lambda: self.log_message(f"PyTorch CUDA检测错误: {cuda_check_error}"))
+
+                    # 解析CUDA状态
+                    cuda_available = False
+                    cuda_version = None
+                    torch_version = None
+
+                    for line in cuda_check_output.split('\n'):
+                        if 'cuda_available=' in line:
+                            cuda_available = 'True' in line
+                        elif 'cuda_version=' in line:
+                            cuda_version = line.split('=', 1)[1]
+                            if cuda_version == 'None':
+                                cuda_version = None
+                        elif 'torch_version=' in line:
+                            torch_version = line.split('=', 1)[1]
+
+                    self.root.after(0, lambda: self.log_message(f"PyTorch CUDA状态: available={cuda_available}, version={cuda_version}, torch={torch_version}"))
+
+                    # 判断是否需要安装CUDA版PyTorch
+                    need_cuda = not cuda_available and not cuda_version
+                    has_cuda_build = torch_version and '+cu' in torch_version
+
+                    if has_cuda_build:
+                        self.root.after(0, lambda: self.log_message(f'✓ 检测到CUDA版PyTorch ({torch_version})，无需重复安装'))
+                        need_cuda = False
                     if need_cuda:
                         stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major)+\".\"+str(sys.version_info.minor))"')
                         pyver = stdout.read().decode('utf-8').strip()
@@ -5655,7 +5356,8 @@ else:
         sftp = None
         try:
             sftp = ssh.open_sftp()
-            cmd = 'find /root/runs/train -type f \\( -name "best.pt" -o -name "best_*.pt" \\) -printf "%T@|%s|%p\\n" 2>/dev/null | sort -t"|" -k1,1nr'
+            # 搜索多个可能的路径，包括 /root/runs/train 和 /root/runs/detect/runs/train
+            cmd = 'find /root/runs -type f \\( -name "best.pt" -o -name "best_*.pt" \\) -printf "%T@|%s|%p\\n" 2>/dev/null | sort -t"|" -k1,1nr'
             stdin, stdout, stderr = ssh.exec_command(cmd)
             output = stdout.read().decode('utf-8', errors='ignore').strip()
             if not output:

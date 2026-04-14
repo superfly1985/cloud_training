@@ -1,44 +1,85 @@
-# YOLO 预训练模型与依赖（Windows）
+# 云端训练管理平台
 
-## 环境准备（推荐）
-- 位置：`D:\OneDrive\24.Visual AI\training_scripts`
-- 执行：右键“使用 PowerShell 运行”或在终端执行
-```
-powershell -ExecutionPolicy Bypass -File .\setup_env.ps1
-```
-- 作用：创建虚拟环境 `.venv` 并安装所需依赖（CPU 版 Torch；如需 GPU，请改用 CUDA 对应的版本）。
+## 项目简介
 
-## 快速获取预训练模型
-- 方式一（脚本）：
-```
-.\.venv\Scripts\python.exe .\download_pretrained.py
-```
-- 方式二（CLI，自动下载）：
-```
-.\.venv\Scripts\python.exe -m pip install ultralytics
-yolo export model=yolov8n.pt format=onnx  # 将自动下载 yolov8n.pt
-```
-- 下载后存放：`training_scripts\models\yolov8*.pt`
+基于YOLOv8的云端训练管理GUI工具，支持服务器配置、数据集管理、训练监控和模型下载等功能。
 
-## 训练（示例）
+## 版本信息
+
+- **当前版本**: v2.2.4
+- **主要功能**: 云端训练、实时监控、模型管理
+
+## 目录结构
+
 ```
-.\.venv\Scripts\python.exe .\train_yolov8.py `
-  --model yolov8n.pt `
-  --data D:\data\your_dataset.yaml `
-  --epochs 100 --imgsz 640
+.
+├── cloud_training_gui.py      # 主程序入口
+├── cloud_training_config.json # 配置文件
+├── cloud_training_gui.spec    # PyInstaller打包配置
+├── requirements.txt           # Python依赖
+├── README.md                  # 项目说明
+│
+├── src/                       # 源代码模块（预留）
+├── tools/                     # 工具脚本
+│   ├── check_server_env.py    # 服务器环境检查
+│   ├── export_model.py        # 模型导出
+│   └── train_yolov8.py        # 本地训练脚本
+│
+├── test/                      # 测试相关
+│   ├── logs/                  # 测试日志
+│   ├── mock_dataset/          # 测试数据集
+│   └── scripts/               # 测试脚本
+│
+├── docs/                      # 文档
+│   ├── 使用说明/              # 用户使用文档
+│   └── 开发文档/              # 开发相关文档
+│
+├── assets/                    # 资源文件
+│   ├── yolov8n.pt            # 预训练模型
+│   └── icons/                # 图标资源
+│
+└── release/                   # 发布文件
 ```
 
-## 导出（示例）
-```
-.\.venv\Scripts\python.exe .\export_model.py --model runs\detect\train\weights\best.pt --format onnx
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+pip install -r requirements.txt
 ```
 
-## 主要依赖
-- Python 3.10+（建议）
-- ultralytics（YOLOv8）
-- torch / torchvision（默认 CPU 版；若需 GPU，请根据 CUDA 版本替换）
-- opencv-python、numpy、matplotlib、PyYAML、onnx（导出可选）
+### 2. 运行程序
+
+```bash
+python cloud_training_gui.py
+```
+
+### 3. 打包发布
+
+```bash
+pyinstaller cloud_training_gui.spec
+```
+
+## 主要功能
+
+- **服务器管理**: SSH连接配置、连接测试
+- **数据集管理**: 本地检查、云端上传、差异对比
+- **环境管理**: 云端环境检查、自动修复
+- **训练控制**: 开始/停止训练、参数配置
+- **实时监控**: GPU状态、训练进度、损失曲线
+- **模型管理**: 训练结果查看、模型下载
+
+## 使用说明
+
+详细使用说明请参考 `docs/使用说明/` 目录下的文档。
+
+## 开发文档
+
+开发相关文档请参考 `docs/开发文档/` 目录。
 
 ## 注意事项
-- 若需 GPU 加速，请将 `requirements.txt` 中的 `torch/torchvision` 改为与你的 CUDA 版本匹配的轮子。
-- 首次运行会自动下载权重到 Ultralytics 缓存目录；脚本会复制到 `models/` 便于统一管理。
+
+1. 首次使用前请配置服务器连接信息
+2. 训练前请确保云端环境已正确配置
+3. 建议先执行"检查环境"和"修复环境"后再开始训练

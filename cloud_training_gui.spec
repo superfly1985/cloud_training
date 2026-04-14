@@ -10,7 +10,8 @@ app_py = Path(current_dir) / 'cloud_training_gui.py'
 app_text = app_py.read_text(encoding='utf-8')
 match = re.search(r'self\.app_version\s*=\s*"([^"]+)"', app_text)
 app_version = match.group(1) if match else 'v0.0.0'
-bundle_name = f'云端训练{app_version}'
+exe_name = '云端训练'  # exe不带版本号
+bundle_name = f'云端训练{app_version}'  # 外层文件夹带版本号
 
 # 分析主程序
 a = Analysis(
@@ -84,7 +85,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name=bundle_name,
+    name=exe_name,  # exe不带版本号
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -108,5 +109,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name=bundle_name
+    name=bundle_name  # 外层文件夹带版本号
 )

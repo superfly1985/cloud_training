@@ -1,20 +1,19 @@
 {
   "server": {
-    "hostname": "43.153.149.106",
+    "hostname": "43.133.224.112",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
     "key_file": ""
   },
   "dataset": {
-    "local_path": "D:/picture/48V主电池/训练照片/检验点2训练/yolo_dataset",
+    "local_path": "D:/picture/00001/yolo_dataset",
     "remote_path": "/root/yolo_dataset",
     "dataset_name": "yolo_dataset",
     "classes": [
-      "0: 目标卡丁",
-      "1: 目标卡丁近景"
+      "0: 焊点漏包"
     ],
-    "num_classes": 2
+    "num_classes": 1
   },
   "training": {
     "epochs": 300,
