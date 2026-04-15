@@ -81,6 +81,11 @@ a = Analysis(
         'pytest', '_pytest', 'unittest', 'doctest',
         # 其他不需要的
         'psutil',  # 系统监控（可选）
+        # 本地训练相关（纯云端模式）
+        'cv2', 'torch', 'torchvision', 'ultralytics', 'onnx', 'onnxruntime',
+        # 其他打包工具依赖
+        'zstandard', 'Nuitka',
+        # 注意：PIL/Pillow 不能排除，ttkbootstrap 依赖它
     ],
     noarchive=False,
     optimize=0,
