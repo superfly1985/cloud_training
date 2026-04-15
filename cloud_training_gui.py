@@ -40,7 +40,7 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.5"
+        self.app_version = "v2.2.6"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -52,8 +52,8 @@ class CloudTrainingGUI:
         self.server_config = {
             'hostname': '',
             'port': 22,
-            'username': '',
-            'password': '',
+            'username': 'root',
+            'password': 'Vonzeus01',
             'key_file': ''
         }
         
@@ -822,20 +822,56 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         # 3. 数据集信息
         info_frame = ttk.Labelframe(right_col, text="数据集信息", padding="10")
         info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        info_frame.columnconfigure(0, weight=1)
         info_frame.columnconfigure(1, weight=1)
-        info_frame.columnconfigure(3, weight=1)
-        
-        ttk.Label(info_frame, text="数据集名称:").grid(row=0, column=0, sticky=tk.E, pady=2)
+
+        # 新增：本地/云端数据集状态显示区域
+        dataset_status_frame = ttk.Frame(info_frame)
+        dataset_status_frame.grid(row=0, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(0, 10))
+        dataset_status_frame.columnconfigure(0, weight=1)
+        dataset_status_frame.columnconfigure(1, weight=1)
+
+        # 统一字体
+        info_font = ("Arial", 9)
+
+        # 本地数据集信息 - 统一高度3行
+        local_info_frame = ttk.Labelframe(dataset_status_frame, text="本地数据集", padding="8")
+        local_info_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 3))
+        self.local_image_count_var = tk.StringVar(value="图片数: -")
+        ttk.Label(local_info_frame, textvariable=self.local_image_count_var, font=info_font).pack(anchor=tk.W, pady=2)
+        self.local_dataset_status_var = tk.StringVar(value="状态: 未检查")
+        ttk.Label(local_info_frame, textvariable=self.local_dataset_status_var, font=info_font, foreground="gray").pack(anchor=tk.W, pady=2)
+        ttk.Label(local_info_frame, text="", font=info_font).pack(anchor=tk.W, pady=2)  # 占位保持高度
+
+        # 云端数据集信息 - 统一高度3行，按钮放右下角
+        remote_info_frame = ttk.Labelframe(dataset_status_frame, text="云端数据集", padding="8")
+        remote_info_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(3, 0))
+        self.remote_image_count_var = tk.StringVar(value="图片数: -")
+        ttk.Label(remote_info_frame, textvariable=self.remote_image_count_var, font=info_font).pack(anchor=tk.W, pady=2)
+        self.remote_dataset_path_var = tk.StringVar(value="路径: -")
+        ttk.Label(remote_info_frame, textvariable=self.remote_dataset_path_var, font=info_font, foreground="gray").pack(anchor=tk.W, pady=2)
+
+        # 清空云端数据按钮 - 放在最后一行右侧
+        ttk.Button(
+            remote_info_frame,
+            text="清空",
+            command=self.clear_remote_dataset,
+            bootstyle="danger-outline",
+            width=6
+        ).pack(anchor=tk.E, pady=(2, 0))
+
+        # 原有控件行号+1
+        ttk.Label(info_frame, text="数据集名称:").grid(row=1, column=0, sticky=tk.E, pady=2)
         self.dataset_name_var = tk.StringVar(value=self.dataset_config['dataset_name'])
-        ttk.Entry(info_frame, textvariable=self.dataset_name_var, width=15).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 10), pady=2)
-        
-        ttk.Label(info_frame, text="类别数量:").grid(row=0, column=2, sticky=tk.E, pady=2)
+        ttk.Entry(info_frame, textvariable=self.dataset_name_var, width=15).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(5, 10), pady=2)
+
+        ttk.Label(info_frame, text="类别数量:").grid(row=1, column=2, sticky=tk.E, pady=2)
         self.num_classes_var = tk.StringVar(value=str(self.dataset_config['num_classes']))
-        ttk.Entry(info_frame, textvariable=self.num_classes_var, width=10, state="readonly").grid(row=0, column=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
-        
-        ttk.Label(info_frame, text="类别列表:").grid(row=1, column=0, sticky=(tk.E, tk.N), pady=2)
+        ttk.Entry(info_frame, textvariable=self.num_classes_var, width=10, state="readonly").grid(row=1, column=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+
+        ttk.Label(info_frame, text="类别列表:").grid(row=2, column=0, sticky=(tk.E, tk.N), pady=2)
         self.classes_text = scrolledtext.ScrolledText(info_frame, height=2, width=40)
-        self.classes_text.grid(row=1, column=1, columnspan=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
+        self.classes_text.grid(row=2, column=1, columnspan=3, sticky=(tk.W, tk.E), padx=(5, 0), pady=2)
         
         # 4. Dataset.yaml配置
         yaml_frame = ttk.Labelframe(right_col, text="Dataset.yaml配置", padding="10")
@@ -896,8 +932,9 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         # 训练状态信息（从训练状态容器移入）
         self.training_info_frame = ttk.Frame(monitor_frame)
         self.training_info_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
-        self.training_info_frame.columnconfigure(0, weight=1)
-        self.training_info_frame.columnconfigure(1, weight=1)
+        self.training_info_frame.columnconfigure(0, weight=0)  # 状态 - 不扩展
+        self.training_info_frame.columnconfigure(1, weight=0)  # 时长 - 不扩展
+        self.training_info_frame.columnconfigure(2, weight=1)  # 按钮 - 靠右
 
         # 训练中进度
         if not hasattr(self, "training_status_var"):
@@ -906,7 +943,16 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
 
         # 训练时长
         self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
-        ttk.Label(self.training_info_frame, textvariable=self.status_duration_var, font=("Arial", 10)).grid(row=0, column=1, sticky=tk.E, padx=5)
+        ttk.Label(self.training_info_frame, textvariable=self.status_duration_var, font=("Arial", 10)).grid(row=0, column=1, sticky=tk.W, padx=5)
+
+        # 监控大屏按钮
+        ttk.Button(
+            self.training_info_frame,
+            text="监控大屏",
+            command=self.open_monitor_fullscreen,
+            bootstyle="info",
+            width=10
+        ).grid(row=0, column=2, sticky=tk.E, padx=5)
 
         # 保留 self.current_epoch_var 引用以防其他地方报错
         self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
@@ -1035,22 +1081,32 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         main_content_frame.rowconfigure(0, weight=1)
         
         # 左侧：系统监控区域（竖向排列）
-        monitor_frame = ttk.Labelframe(main_content_frame, text="系统监控", padding="5")
-        monitor_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
-        
+        monitor_container = ttk.Frame(main_content_frame)
+        monitor_container.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+        monitor_container.columnconfigure(0, weight=1)
+        monitor_container.rowconfigure(1, weight=1)
+
+        # 标题栏
+        monitor_header = ttk.Frame(monitor_container)
+        monitor_header.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        ttk.Label(monitor_header, text="系统监控", font=("Arial", 10, "bold")).pack(side='left')
+
+        monitor_frame = ttk.Labelframe(monitor_container, text="", padding="5")
+        monitor_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
         monitor_frame.columnconfigure(0, weight=1)
         monitor_frame.columnconfigure(1, weight=1)
         monitor_frame.rowconfigure(0, weight=1)
         monitor_frame.rowconfigure(1, weight=1)
-        
+
         # GPU利用率监控
         self.gpu_utilization_frame = ttk.Labelframe(monitor_frame, text="GPU利用率", padding="3")
         self.gpu_utilization_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(0, 3))
-        
+
         # GPU显存监控
         self.gpu_memory_frame = ttk.Labelframe(monitor_frame, text="GPU显存使用率", padding="3")
         self.gpu_memory_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 3), padx=(3, 0))
-        
+
         self.loss_frame = ttk.Labelframe(monitor_frame, text="Loss曲线", padding="3")
         self.loss_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(3, 0), padx=(0, 0))
         
@@ -1344,6 +1400,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.log_message("服务器连接测试成功")
         self.start_system_monitoring()
         self.update_action_button_states()
+        # 更新数据集状态显示
+        self.update_dataset_status_display()
     
     def connection_test_failed(self, error):
         """连接测试失败"""
@@ -3007,6 +3065,9 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             self.log_message(f"数据集检查通过 ({self.last_dataset_check_time})，可开始上传")
             messagebox.showinfo("检查通过", "数据集检查通过，可上传数据集")
 
+        # 更新数据集状态显示
+        self.update_dataset_status_display()
+
     def check_yaml_paths(self, yaml_data, dataset_path):
         """检查yaml配置中的路径问题"""
         issues = []
@@ -4144,6 +4205,8 @@ print(json.dumps(res, ensure_ascii=False))"""
                             f"总计 {total}\n成功 {ok_count}\n跳过 {skip_count}\n失败 {len(fail_list)}\n云端验收通过，可开始训练"))
                         self.root.after(0, lambda: self.upload_status_var.set("上传完成，云端验收通过"))
                         self.root.after(0, lambda: self.log_message("数据集上传完成，云端验收通过"))
+                        # 更新数据集状态显示
+                        self.root.after(0, self.update_dataset_status_display)
                     else:
                         self.remote_verify_passed = False
                         bad = verify_res.get('bad') or {}
@@ -5084,7 +5147,108 @@ else:
                     self.root.after(0, lambda: self.log_message(f"停止训练失败: {e}"))
             
             threading.Thread(target=stop_thread, daemon=True).start()
-    
+
+    def clear_remote_dataset(self):
+        """清空云端数据集"""
+        if not self.is_connected:
+            messagebox.showerror("错误", "请先连接服务器")
+            return
+
+        # 确认对话框
+        if not messagebox.askyesno(
+            "确认清空",
+            "确定要清空云端数据集吗？\n\n"
+            f"路径: {self.remote_path_var.get()}\n\n"
+            "⚠️ 此操作不可恢复！",
+            icon='warning'
+        ):
+            return
+
+        self.log_message("正在清空云端数据集...")
+
+        def clear_thread():
+            try:
+                remote_path = self.remote_path_var.get()
+
+                # 检查远程路径是否存在
+                check_cmd = f"test -d {remote_path} && echo 'EXISTS' || echo 'NOT_EXISTS'"
+                stdin, stdout, stderr = self.ssh_client.exec_command(check_cmd)
+                result = stdout.read().decode().strip()
+
+                if result != 'EXISTS':
+                    self.root.after(0, lambda: messagebox.showinfo("提示", "云端数据集路径不存在，无需清空"))
+                    self.root.after(0, lambda: self.log_message("云端数据集路径不存在"))
+                    return
+
+                # 清空数据集目录（保留目录本身，删除内容）
+                clear_cmd = f"rm -rf {remote_path}/*"
+                stdin, stdout, stderr = self.ssh_client.exec_command(clear_cmd)
+                error = stderr.read().decode().strip()
+
+                if error and "No such file or directory" not in error:
+                    raise Exception(f"清空失败: {error}")
+
+                self.root.after(0, lambda: messagebox.showinfo("成功", "云端数据集已清空"))
+                self.root.after(0, lambda: self.log_message("✅ 云端数据集已清空"))
+
+                # 更新显示
+                self.root.after(0, self.update_dataset_status_display)
+
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("错误", f"清空云端数据集失败: {e}"))
+                self.root.after(0, lambda: self.log_message(f"❌ 清空云端数据集失败: {e}"))
+
+        threading.Thread(target=clear_thread, daemon=True).start()
+
+    def update_dataset_status_display(self):
+        """更新数据集状态显示"""
+        # 更新本地数据集状态
+        try:
+            local_path = self.local_path_var.get()
+            if os.path.exists(local_path):
+                # 统计图片数量
+                image_count = 0
+                for split in ['train', 'val', 'test']:
+                    images_dir = os.path.join(local_path, split, 'images')
+                    if os.path.exists(images_dir):
+                        image_count += len([f for f in os.listdir(images_dir) if f.endswith(('.jpg', '.jpeg', '.png', '.bmp'))])
+                self.local_image_count_var.set(f"图片数: {image_count}")
+                self.local_dataset_status_var.set("状态: ✅ 已就绪")
+            else:
+                self.local_image_count_var.set("图片数: -")
+                self.local_dataset_status_var.set("状态: ❌ 路径不存在")
+        except Exception:
+            self.local_image_count_var.set("图片数: -")
+            self.local_dataset_status_var.set("状态: 未检查")
+
+        # 更新云端数据集状态
+        if self.is_connected:
+            def check_remote():
+                try:
+                    remote_path = self.remote_path_var.get()
+                    check_cmd = f"test -d {remote_path} && echo 'EXISTS' || echo 'NOT_EXISTS'"
+                    stdin, stdout, stderr = self.ssh_client.exec_command(check_cmd)
+                    result = stdout.read().decode().strip()
+
+                    if result == 'EXISTS':
+                        # 统计云端图片数量
+                        count_cmd = f"find {remote_path} -type f \\( -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' -o -name '*.bmp' \\) | wc -l"
+                        stdin, stdout, stderr = self.ssh_client.exec_command(count_cmd)
+                        remote_count = stdout.read().decode().strip()
+                        self.remote_image_count_var.set(f"图片数: {remote_count}")
+                        self.remote_dataset_path_var.set(f"路径: {remote_path}")
+                    else:
+                        self.remote_image_count_var.set("图片数: 0")
+                        self.remote_dataset_path_var.set("路径: -")
+                except Exception:
+                    self.remote_image_count_var.set("图片数: -")
+                    self.remote_dataset_path_var.set("路径: -")
+
+            threading.Thread(target=check_remote, daemon=True).start()
+        else:
+            self.remote_image_count_var.set("图片数: -")
+            self.remote_dataset_path_var.set("路径: 未连接")
+
     def download_models(self):
         """查询服务器内所有模型文件并选择下载"""
         if not self.is_connected:
@@ -5742,6 +5906,9 @@ else:
     
     def init_monitoring_charts(self):
         """初始化监控图表"""
+        # 设置中文字体（必须在style之前）
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
         plt.style.use('seaborn-v0_8-darkgrid')
         chart_width, chart_height = 3.0, 1.5
         self.monitoring_figures['gpu_util'] = Figure(figsize=(chart_width, chart_height), dpi=80)
@@ -5778,7 +5945,239 @@ else:
         self.monitoring_canvases['loss'].get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         self.update_monitoring_charts()
-    
+
+    def open_monitor_fullscreen(self):
+        """打开监控大屏弹窗"""
+        if not self.is_connected:
+            messagebox.showwarning("提示", "请先连接服务器")
+            return
+
+        # 创建弹窗
+        monitor_window = tk.Toplevel(self.root)
+        monitor_window.title("训练监控大屏")
+        monitor_window.geometry("1200x800")
+        monitor_window.transient(self.root)
+        monitor_window.grab_set()
+
+        # 居中显示
+        monitor_window.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+
+        # 顶部工具栏
+        toolbar = ttk.Frame(monitor_window)
+        toolbar.pack(fill='x', padx=10, pady=5)
+        ttk.Button(toolbar, text="🔙 返回", command=monitor_window.destroy, bootstyle="secondary").pack(side='left')
+        ttk.Label(toolbar, text="训练监控大屏", font=("Arial", 14, "bold")).pack(side='left', padx=20)
+        
+        # 大屏标题栏状态显示
+        fullscreen_header_status = tk.StringVar(value="未开始")
+        fullscreen_header_duration = tk.StringVar(value="时长: 00:00:00")
+        ttk.Label(toolbar, textvariable=fullscreen_header_status, font=("Arial", 11, "bold"), foreground="#007bff").pack(side='left', padx=10)
+        ttk.Label(toolbar, textvariable=fullscreen_header_duration, font=("Arial", 11)).pack(side='left', padx=5)
+
+        # 三图容器
+        charts_frame = ttk.Frame(monitor_window)
+        charts_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        charts_frame.columnconfigure(0, weight=1)
+        charts_frame.columnconfigure(1, weight=1)
+        charts_frame.rowconfigure(0, weight=1)
+        charts_frame.rowconfigure(1, weight=2)  # Loss曲线占更多空间
+
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        # GPU利用率 (左上)
+        gpu_util_frame = ttk.Labelframe(charts_frame, text="GPU利用率", padding=5)
+        gpu_util_frame.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+
+        fig_gpu_util = Figure(figsize=(6, 3.5), dpi=100)
+        fig_gpu_util.patch.set_facecolor('white')
+        ax_gpu_util = fig_gpu_util.add_subplot(111)
+        ax_gpu_util.set_ylabel('利用率 (%)', fontsize=10)
+        ax_gpu_util.set_ylim(0, 100)
+        ax_gpu_util.grid(True, alpha=0.3)
+        ax_gpu_util.tick_params(axis='both', which='major', labelsize=8)
+        canvas_gpu_util = FigureCanvasTkAgg(fig_gpu_util, gpu_util_frame)
+        canvas_gpu_util.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # GPU显存 (右上)
+        gpu_mem_frame = ttk.Labelframe(charts_frame, text="GPU显存使用率", padding=5)
+        gpu_mem_frame.grid(row=0, column=1, sticky='nsew', padx=5, pady=5)
+
+        fig_gpu_mem = Figure(figsize=(6, 3.5), dpi=100)
+        fig_gpu_mem.patch.set_facecolor('white')
+        ax_gpu_mem = fig_gpu_mem.add_subplot(111)
+        ax_gpu_mem.set_ylabel('使用率 (%)', fontsize=10)
+        ax_gpu_mem.set_ylim(0, 100)
+        ax_gpu_mem.grid(True, alpha=0.3)
+        ax_gpu_mem.tick_params(axis='both', which='major', labelsize=8)
+        canvas_gpu_mem = FigureCanvasTkAgg(fig_gpu_mem, gpu_mem_frame)
+        canvas_gpu_mem.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Loss曲线 (下方，跨两列)
+        loss_frame = ttk.Labelframe(charts_frame, text="Loss曲线", padding=5)
+        loss_frame.grid(row=1, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+
+        fig_loss = Figure(figsize=(12, 5), dpi=100)
+        fig_loss.patch.set_facecolor('white')
+        ax_loss = fig_loss.add_subplot(111)
+        ax_loss.set_xlabel('Epoch', fontsize=10)
+        ax_loss.set_ylabel('Loss', fontsize=10)
+        ax_loss.grid(True, alpha=0.3)
+        ax_loss.tick_params(axis='both', which='major', labelsize=8)
+        canvas_loss = FigureCanvasTkAgg(fig_loss, loss_frame)
+        canvas_loss.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # 底部状态栏
+        status_bar = ttk.Frame(monitor_window)
+        status_bar.pack(fill='x', padx=10, pady=5)
+
+        fullscreen_status_var = tk.StringVar(value="状态: 未开始")
+        fullscreen_duration_var = tk.StringVar(value="时长: 00:00:00")
+        fullscreen_loss_var = tk.StringVar(value="当前Loss: -")
+
+        ttk.Label(status_bar, textvariable=fullscreen_status_var, font=("Arial", 10)).pack(side='left', padx=10)
+        ttk.Label(status_bar, textvariable=fullscreen_duration_var, font=("Arial", 10)).pack(side='left', padx=10)
+        ttk.Label(status_bar, textvariable=fullscreen_loss_var, font=("Arial", 10)).pack(side='left', padx=10)
+
+        # 存储大屏图表引用
+        self.fullscreen_figures = {
+            'gpu_util': (fig_gpu_util, ax_gpu_util, canvas_gpu_util),
+            'gpu_mem': (fig_gpu_mem, ax_gpu_mem, canvas_gpu_mem),
+            'loss': (fig_loss, ax_loss, canvas_loss)
+        }
+        self.fullscreen_status_vars = {
+            'status': fullscreen_status_var,
+            'duration': fullscreen_duration_var,
+            'loss': fullscreen_loss_var,
+            'header_status': fullscreen_header_status,
+            'header_duration': fullscreen_header_duration
+        }
+
+        # 启动大屏更新循环
+        self.start_fullscreen_update(monitor_window)
+
+    def start_fullscreen_update(self, window):
+        """启动大屏实时更新"""
+        def update_loop():
+            try:
+                if not window.winfo_exists():
+                    return
+
+                # 更新GPU利用率图表 - 使用与主界面相同的数据源
+                if hasattr(self, 'gpu_utilization_data') and self.gpu_utilization_data:
+                    fig, ax, canvas = self.fullscreen_figures['gpu_util']
+                    ax.clear()
+                    ax.set_title('GPU利用率', fontsize=10)
+                    ax.set_ylabel('利用率 (%)', fontsize=10)
+                    ax.set_ylim(0, 100)
+                    ax.grid(True, alpha=0.3)
+                    time_range = list(range(len(self.gpu_utilization_data)))
+                    ax.plot(time_range, list(self.gpu_utilization_data), 'orange', linewidth=2, label='GPU利用率')
+                    ax.fill_between(time_range, list(self.gpu_utilization_data), alpha=0.3, color='orange')
+                    ax.legend(loc='upper right')
+                    canvas.draw()
+
+                # 更新GPU显存图表
+                if hasattr(self, 'gpu_memory_data') and self.gpu_memory_data:
+                    fig, ax, canvas = self.fullscreen_figures['gpu_mem']
+                    ax.clear()
+                    ax.set_title('GPU显存使用率', fontsize=10)
+                    ax.set_ylabel('使用率 (%)', fontsize=10)
+                    ax.set_ylim(0, 100)
+                    ax.grid(True, alpha=0.3)
+                    time_range = list(range(len(self.gpu_memory_data)))
+                    ax.plot(time_range, list(self.gpu_memory_data), 'b-', linewidth=2, label='显存使用率')
+                    ax.fill_between(time_range, list(self.gpu_memory_data), alpha=0.3, color='blue')
+                    ax.legend(loc='upper right')
+                    canvas.draw()
+
+                # 更新Loss曲线 - 使用与主界面相同的数据源
+                if hasattr(self, 'loss_epoch_data') and self.loss_epoch_data:
+                    fig, ax, canvas = self.fullscreen_figures['loss']
+                    ax.clear()
+                    ax.set_title('Loss曲线', fontsize=10)
+                    ax.set_xlabel('Epoch', fontsize=10)
+                    ax.set_ylabel('Loss', fontsize=10)
+                    ax.grid(True, alpha=0.3)
+
+                    x = list(self.loss_epoch_data)
+                    if hasattr(self, 'loss_box_data') and self.loss_box_data:
+                        ax.plot(x, list(self.loss_box_data), color='#ff7f0e', linewidth=2, marker='o', markersize=3, label='box')
+                    if hasattr(self, 'loss_cls_data') and self.loss_cls_data:
+                        ax.plot(x, list(self.loss_cls_data), color='#1f77b4', linewidth=2, marker='o', markersize=3, label='cls')
+                    if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data:
+                        ax.plot(x, list(self.loss_dfl_data), color='#2ca02c', linewidth=2, marker='o', markersize=3, label='dfl')
+                    ax.legend(loc='upper left', fontsize=9)
+
+                    # 大屏智能末端标注 - 避免重叠
+                    end_values = []
+                    if hasattr(self, 'loss_box_data') and self.loss_box_data:
+                        end_values.append({'type': 'box', 'value': self.loss_box_data[-1], 'x': x[-1], 'color': '#ff7f0e'})
+                    if hasattr(self, 'loss_cls_data') and self.loss_cls_data:
+                        end_values.append({'type': 'cls', 'value': self.loss_cls_data[-1], 'x': x[-1], 'color': '#1f77b4'})
+                    if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data:
+                        end_values.append({'type': 'dfl', 'value': self.loss_dfl_data[-1], 'x': x[-1], 'color': '#2ca02c'})
+
+                    # 按值排序，让大的在上面
+                    end_values.sort(key=lambda item: item['value'], reverse=True)
+
+                    # 智能偏移 - 大屏用更大的间距
+                    min_offset = 18  # 大屏用更大的间距
+                    for i, item in enumerate(end_values):
+                        y_offset = (len(end_values) - 1 - i) * min_offset - (len(end_values) - 1) * min_offset / 2
+                        ax.annotate(
+                            f"{item['type']} {item['value']:.4f}",
+                            xy=(item['x'], item['value']),
+                            xytext=(12, y_offset),
+                            textcoords='offset points',
+                            color=item['color'],
+                            fontsize=9,
+                            fontweight='bold',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=item['color'], alpha=0.8)
+                        )
+
+                    canvas.draw()
+
+                # 更新状态栏
+                if hasattr(self, 'training_status_var'):
+                    status_text = self.training_status_var.get()
+                    self.fullscreen_status_vars['status'].set(status_text)
+                    # 同步到标题栏
+                    self.fullscreen_status_vars['header_status'].set(status_text)
+                if hasattr(self, 'status_duration_var'):
+                    duration_text = self.status_duration_var.get()
+                    self.fullscreen_status_vars['duration'].set(duration_text)
+                    # 同步到标题栏
+                    self.fullscreen_status_vars['header_duration'].set(duration_text)
+                # 计算当前总loss
+                total_loss = 0
+                loss_count = 0
+                if hasattr(self, 'loss_box_data') and self.loss_box_data:
+                    total_loss += self.loss_box_data[-1]
+                    loss_count += 1
+                if hasattr(self, 'loss_cls_data') and self.loss_cls_data:
+                    total_loss += self.loss_cls_data[-1]
+                    loss_count += 1
+                if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data:
+                    total_loss += self.loss_dfl_data[-1]
+                    loss_count += 1
+                if loss_count > 0:
+                    self.fullscreen_status_vars['loss'].set(f"当前Loss: {total_loss:.4f}")
+
+                # 继续更新
+                window.after(1000, update_loop)
+
+            except Exception as e:
+                logging.warning(f"大屏更新失败: {e}")
+                if window.winfo_exists():
+                    window.after(2000, update_loop)
+
+        update_loop()
+
     def start_system_monitoring(self):
         """开始系统监控"""
         if self.monitoring_thread and self.monitoring_thread.is_alive():
@@ -6065,12 +6464,33 @@ else:
                 x_cls, v_cls = latest_valid_point(x, cls_y)
                 x_dfl, v_dfl = latest_valid_point(x, dfl_y)
 
+                # 智能标注 - 收集所有有效值并排序
+                end_values = []
                 if x_box is not None and v_box is not None:
-                    ax_loss.annotate(f'box {v_box:.4f}', xy=(x_box, v_box), xytext=(6, 10), textcoords='offset points', color='#ff7f0e', fontsize=7, fontweight='bold')
+                    end_values.append({'type': 'box', 'value': v_box, 'x': x_box, 'color': '#ff7f0e'})
                 if x_cls is not None and v_cls is not None:
-                    ax_loss.annotate(f'cls {v_cls:.4f}', xy=(x_cls, v_cls), xytext=(6, 0), textcoords='offset points', color='#1f77b4', fontsize=7, fontweight='bold')
+                    end_values.append({'type': 'cls', 'value': v_cls, 'x': x_cls, 'color': '#1f77b4'})
                 if x_dfl is not None and v_dfl is not None:
-                    ax_loss.annotate(f'dfl {v_dfl:.4f}', xy=(x_dfl, v_dfl), xytext=(6, -10), textcoords='offset points', color='#2ca02c', fontsize=7, fontweight='bold')
+                    end_values.append({'type': 'dfl', 'value': v_dfl, 'x': x_dfl, 'color': '#2ca02c'})
+
+                # 按值排序，让大的在上面
+                end_values.sort(key=lambda item: item['value'], reverse=True)
+
+                # 智能偏移 - 根据位置计算偏移量避免重叠
+                min_offset = 12  # 最小像素间距
+                for i, item in enumerate(end_values):
+                    # 根据排序后的索引计算垂直偏移
+                    y_offset = (len(end_values) - 1 - i) * min_offset - (len(end_values) - 1) * min_offset / 2
+                    ax_loss.annotate(
+                        f"{item['type']} {item['value']:.4f}",
+                        xy=(item['x'], item['value']),
+                        xytext=(8, y_offset),
+                        textcoords='offset points',
+                        color=item['color'],
+                        fontsize=7,
+                        fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor=item['color'], alpha=0.7)
+                    )
 
                 total_vals = [v for v in [v_box, v_cls, v_dfl] if v is not None and np.isfinite(v)]
                 total_loss = sum(total_vals) if total_vals else None
@@ -7173,19 +7593,62 @@ else:
             return f"[训练] {body}"
         return text.replace('\r', ' ').strip()
 
-    def log_message(self, message):
+    def _detect_log_level(self, message):
+        """根据消息内容自动识别日志级别"""
+        msg = message.lower()
+        if any(k in msg for k in ['成功', '完成', '通过', '✅', '已就绪', '验收通过']):
+            return 'success'
+        if any(k in msg for k in ['失败', '错误', '异常', '❌', '超时', '拒绝', '无法']):
+            return 'error'
+        if any(k in msg for k in ['警告', '注意', '⚠️', '缺失', '跳过']):
+            return 'warning'
+        if any(k in msg for k in ['训练', 'epoch', 'loss', '📊', '进度', '轮次', 'box_loss', 'cls_loss', 'dfl_loss']):
+            return 'training'
+        if any(k in msg for k in ['连接', '服务器', 'ssh', '🔧', '系统', '环境']):
+            return 'system'
+        return 'info'
+
+    def log_message(self, message, level=None):
+        """
+        记录日志消息，支持颜色区分
+        level: 'success', 'error', 'warning', 'info', 'training', 'system'
+               None则自动识别
+        """
         timestamp = datetime.now().strftime("%H:%M:%S")
         normalized = self._normalize_training_log_message(message)
         if not normalized:
             return
+
+        # 自动识别颜色级别
+        if level is None:
+            level = self._detect_log_level(normalized)
+
+        # 颜色映射
+        color_map = {
+            'success': '#28a745',  # 绿色
+            'error': '#dc3545',    # 红色
+            'warning': '#fd7e14',  # 橙色
+            'training': '#007bff', # 蓝色
+            'system': '#6f42c1',   # 紫色
+            'info': '#212529',     # 黑色
+        }
+
         log_entry = f"[{timestamp}] {normalized}\n"
-        
+
+        # 插入文本
         self.log_text.insert(tk.END, log_entry)
+
+        # 为刚插入的行设置颜色tag
+        start_idx = self.log_text.index("end-2l linestart")
+        end_idx = self.log_text.index("end-1c")
+        self.log_text.tag_add(level, start_idx, end_idx)
+        self.log_text.tag_config(level, foreground=color_map.get(level, '#212529'))
+
         self.log_text.see(tk.END)
-        
+
         if hasattr(self, 'status_var'):
             self.status_var.set(normalized)
-        
+
         self.logger.info(normalized)
 
 def main():

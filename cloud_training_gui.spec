@@ -72,7 +72,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # 开发调试工具（注意：jaraco不能排除，是pkg_resources依赖）
+        'IPython', 'black', 'blib2to3', 'nbformat', 'parso',
+        # Qt相关（使用tkinter）
+        'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'shiboken2', 'shiboken6',
+        # 测试相关
+        'pytest', '_pytest', 'unittest', 'doctest',
+        # 其他不需要的
+        'psutil',  # 系统监控（可选）
+    ],
     noarchive=False,
     optimize=0,
 )

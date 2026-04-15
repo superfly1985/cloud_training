@@ -1,6 +1,6 @@
 {
   "server": {
-    "hostname": "43.133.224.112",
+    "hostname": "43.133.225.237",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
@@ -16,11 +16,11 @@
     "num_classes": 1
   },
   "training": {
-    "epochs": 30,
-    "batch_size": 32,
-    "learning_rate": 0.02,
+    "epochs": 60,
+    "batch_size": 24,
+    "learning_rate": 0.015,
     "image_size": 640,
-    "base_model": "yolov8n.pt"
+    "base_model": "yolov8s.pt"
   },
   "upload": {
     "max_workers": 8,
