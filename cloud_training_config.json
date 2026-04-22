@@ -1,6 +1,6 @@
 {
   "server": {
-    "hostname": "43.133.225.237",
+    "hostname": "43.153.152.195",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
@@ -16,14 +16,25 @@
     "num_classes": 1
   },
   "training": {
-    "epochs": 60,
-    "batch_size": 24,
-    "learning_rate": 0.015,
+    "epochs": 30,
+    "batch_size": 32,
+    "learning_rate": 0.02,
     "image_size": 640,
-    "base_model": "yolov8s.pt"
+    "base_model": "yolov8n.pt",
+    "model_name_suffix": "测试训练",
+    "augment_scale": 0.376,
+    "augment_fliplr": 0.183,
+    "augment_hsv_h": 0.014,
+    "augment_hsv_s": 0.527,
+    "augment_hsv_v": 0.344,
+    "augment_scale_active": true,
+    "augment_fliplr_active": false,
+    "augment_hsv_h_active": false,
+    "augment_hsv_s_active": false,
+    "augment_hsv_v_active": false
   },
   "upload": {
-    "max_workers": 8,
+    "max_workers": 20,
     "retry_times": 3
   }
 }

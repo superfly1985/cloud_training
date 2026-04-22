@@ -40,7 +40,7 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.7"
+        self.app_version = "v2.2.10"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -70,7 +70,14 @@ class CloudTrainingGUI:
             'batch_size': 20,
             'learning_rate': 0.01,
             'image_size': 1024,
-            'base_model': 'yolov8s.pt'
+            'base_model': 'yolov8s.pt',
+            'model_name_suffix': '',
+            # 图像增强参数
+            'augment_scale': 0.5,
+            'augment_fliplr': 0.5,
+            'augment_hsv_h': 0.015,
+            'augment_hsv_s': 0.7,
+            'augment_hsv_v': 0.4
         }
 
         # 状态变量
@@ -158,6 +165,15 @@ class CloudTrainingGUI:
                 self.upload_toggle_button.configure(state=("normal" if upload_enabled else "disabled"))
             if hasattr(self, 'start_training_button'):
                 self.start_training_button.configure(state=("normal" if train_enabled else "disabled"))
+        except Exception:
+            pass
+
+    def _apply_saved_augment_states(self):
+        """应用保存的图像增强激活状态到UI"""
+        try:
+            for key, active_var in self.augment_active_vars.items():
+                saved_state = self.training_config.get(f'{key}_active', True)
+                active_var.set(saved_state)
         except Exception:
             pass
 
@@ -479,84 +495,36 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
 
     def get_python_cmd_with_fallback(self, ssh, log_func=None):
         """
-        获取可用的Python命令
-        策略：优先使用miniforge3（服务器2标准环境），失败则遍历查找
+        获取可用的Python命令（只探测，不安装）
+        策略：优先使用miniforge3（标准环境），失败再只读回退
         """
-        # === 优先方案：服务器2标准环境 ===
-        preferred_python = "/root/miniforge3/bin/python3"
-
-        # 检查miniforge3是否存在且有yaml/ruamel.yaml模块
-        stdin, stdout, stderr = ssh.exec_command(
-            f"test -f {preferred_python} && {preferred_python} -c 'import yaml; print(\"ok\")' 2>&1"
-        )
-        result = stdout.read().decode('utf-8').strip()
-
-        # 如果yaml导入失败，尝试ruamel.yaml（服务器2实际安装的）
-        if result != "ok":
-            stdin, stdout, stderr = ssh.exec_command(
-                f"test -f {preferred_python} && {preferred_python} -c 'from ruamel.yaml import YAML; print(\"ok\")' 2>&1"
-            )
-            result = stdout.read().decode('utf-8').strip()
-
-        if result == "ok":
-            if log_func:
-                log_func(f"✓ 使用优先方案: {preferred_python}")
-            return preferred_python
-
-        # === 兼容方案：遍历查找 ===
-        if log_func:
-            log_func("优先方案不可用，尝试兼容方案...")
-
         python_candidates = [
-            '/root/anaconda3/bin/python3',
-            '/root/miniconda3/bin/python3',
-            'python3',
-            'python',
-            '/usr/bin/python3',
-            '/usr/bin/python',
+            "/root/miniforge3/bin/python3",
+            "/root/miniconda3/bin/python3",
+            "/root/anaconda3/bin/python3",
+            "/opt/conda/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+            "python3",
+            "python",
         ]
-
         for cmd in python_candidates:
-            # 检查是否存在且有yaml或ruamel.yaml
             stdin, stdout, stderr = ssh.exec_command(
-                f"which {cmd} 2>/dev/null && {cmd} -c 'import yaml; print(\"ok\")' 2>&1"
+                f'{cmd} -c "import sys, subprocess; '
+                f'print(sys.executable); '
+                f'print(str(sys.version_info.major)+\'.\'+str(sys.version_info.minor)); '
+                f'rc=subprocess.call([sys.executable, \'-m\', \'pip\', \'--version\'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); '
+                f'print(\'PIP_OK\' if rc==0 else \'PIP_MISSING\')" 2>/dev/null'
             )
-            result = stdout.read().decode('utf-8').strip()
-            # 如果yaml导入失败，尝试ruamel.yaml
-            if result != "ok":
-                stdin, stdout, stderr = ssh.exec_command(
-                    f"which {cmd} 2>/dev/null && {cmd} -c 'from ruamel.yaml import YAML; print(\"ok\")' 2>&1"
-                )
-                result = stdout.read().decode('utf-8').strip()
-            if result == "ok":
+            out = stdout.read().decode('utf-8', errors='ignore').strip().splitlines()
+            if len(out) >= 3 and out[-1].strip() == "PIP_OK":
+                resolved = out[0].strip() or cmd
                 if log_func:
-                    log_func(f"✓ 使用兼容方案: {cmd}")
-                return cmd
-            # 尝试安装yaml
-            stdin, stdout, stderr = ssh.exec_command(f"{cmd} -m pip install pyyaml -q 2>/dev/null")
-            stdin, stdout, stderr = ssh.exec_command(
-                f"{cmd} -c 'import yaml; print(\"ok\")' 2>&1"
-            )
-            result = stdout.read().decode('utf-8').strip()
-            if result == "ok":
-                if log_func:
-                    log_func(f"✓ 安装yaml后使用: {cmd}")
-                return cmd
+                    log_func(f"✓ 使用Python解释器: {resolved}")
+                return resolved
 
-        # 最后尝试apt安装
         if log_func:
-            log_func("尝试使用apt安装python3-yaml...")
-        stdin, stdout, stderr = ssh.exec_command("apt-get update -qq && apt-get install -y python3-yaml -qq 2>/dev/null")
-        for cmd in ['python3', '/usr/bin/python3']:
-            stdin, stdout, stderr = ssh.exec_command(
-                f"{cmd} -c 'import yaml; print(\"ok\")' 2>&1"
-            )
-            result = stdout.read().decode('utf-8').strip()
-            if result == "ok":
-                if log_func:
-                    log_func(f"✓ apt安装后使用: {cmd}")
-                return cmd
-
+            log_func("✗ 未找到可用Python解释器（仅探测模式，不自动安装）")
         return None
     
     def setup_ui(self):
@@ -738,40 +706,168 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.connection_status_label = ttk.Label(server_frame, textvariable=self.connection_status_var, foreground="red", anchor="center")
         self.connection_status_label.grid(row=6, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
 
-        # 2. 训练参数配置 (纵向排列)
+        # 2. 训练参数配置 (均分双列布局：左列基础参数，右列图像增强)
         params_frame = ttk.Labelframe(left_col, text="训练参数配置", padding="10")
         params_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        params_frame.columnconfigure(0, weight=1)
         params_frame.columnconfigure(1, weight=1)
         
-        ttk.Label(params_frame, text="训练轮数:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        # 左列：基础参数
+        left_params = ttk.Frame(params_frame)
+        left_params.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+        left_params.columnconfigure(0, weight=1)
+        
+        # 基础参数行配置
+        base_params = [
+            ("训练轮数:", 'epochs', self.training_config['epochs']),
+            ("批次大小:", 'batch_size', self.training_config['batch_size']),
+            ("学习率:", 'learning_rate', self.training_config['learning_rate']),
+            ("图像大小:", 'image_size', self.training_config['image_size']),
+        ]
+        
         self.epochs_var = tk.StringVar(value=str(self.training_config['epochs']))
-        ttk.Entry(params_frame, textvariable=self.epochs_var).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2)
-        
-        ttk.Label(params_frame, text="批次大小:").grid(row=1, column=0, sticky=tk.W, pady=2)
         self.batch_size_var = tk.StringVar(value=str(self.training_config['batch_size']))
-        ttk.Entry(params_frame, textvariable=self.batch_size_var).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=2)
-        
-        ttk.Label(params_frame, text="学习率:").grid(row=2, column=0, sticky=tk.W, pady=2)
         self.learning_rate_var = tk.StringVar(value=str(self.training_config['learning_rate']))
-        ttk.Entry(params_frame, textvariable=self.learning_rate_var).grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2)
-        
-        ttk.Label(params_frame, text="图像大小:").grid(row=3, column=0, sticky=tk.W, pady=2)
         self.image_size_var = tk.StringVar(value=str(self.training_config['image_size']))
-        ttk.Entry(params_frame, textvariable=self.image_size_var).grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2)
         
-        ttk.Label(params_frame, text="基础模型:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        for i, (label, key, default) in enumerate(base_params):
+            row_frame = ttk.Frame(left_params)
+            row_frame.grid(row=i, column=0, sticky=(tk.W, tk.E), pady=3)
+            row_frame.columnconfigure(1, weight=1)
+            ttk.Label(row_frame, text=label).grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+            var = getattr(self, f'{key}_var')
+            ttk.Entry(row_frame, textvariable=var, width=10).grid(row=0, column=1, sticky=(tk.W, tk.E))
+        
+        # 基础模型
+        model_frame = ttk.Frame(left_params)
+        model_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=3)
+        model_frame.columnconfigure(1, weight=1)
+        ttk.Label(model_frame, text="基础模型:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
         self.base_model_var = tk.StringVar(value=self.training_config['base_model'])
-        model_combo = ttk.Combobox(params_frame, textvariable=self.base_model_var)
+        model_combo = ttk.Combobox(model_frame, textvariable=self.base_model_var, width=10)
         model_combo['values'] = (
             'yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt',
             'yolov9c.pt', 'yolov9e.pt',
             'yolov10n.pt', 'yolov10s.pt', 'yolov10m.pt', 'yolov10b.pt', 'yolov10l.pt', 'yolov10x.pt',
             'yolov11n.pt', 'yolov11s.pt', 'yolov11m.pt', 'yolov11l.pt', 'yolov11x.pt'
         )
-        # 禁用 Combobox 的鼠标滚轮事件，防止误触改变选项
         model_combo.bind('<MouseWheel>', lambda e: "break")
+        model_combo.grid(row=0, column=1, sticky=(tk.W, tk.E))
+
+        # 模型命名后缀（用于训练产物重命名）
+        model_name_frame = ttk.Frame(left_params)
+        model_name_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=3)
+        model_name_frame.columnconfigure(1, weight=1)
+        ttk.Label(model_name_frame, text="模型命名:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        self.model_name_suffix_var = tk.StringVar(value=self.training_config.get('model_name_suffix', ''))
+        ttk.Entry(model_name_frame, textvariable=self.model_name_suffix_var, width=18).grid(row=0, column=1, sticky=(tk.W, tk.E))
         
-        model_combo.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
+        # 右列：图像增强参数（滑块）
+        right_params = ttk.Frame(params_frame)
+        right_params.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0))
+        right_params.columnconfigure(0, weight=1)
+        
+        # 图像增强参数配置（中文标签）
+        augment_configs = [
+            ("缩放增强:", 'augment_scale', 0.0, 1.0, 0.5),
+            ("水平翻转:", 'augment_fliplr', 0.0, 1.0, 0.5),
+            ("色调变化:", 'augment_hsv_h', 0.0, 0.1, 0.015),
+            ("饱和变化:", 'augment_hsv_s', 0.0, 1.0, 0.7),
+            ("亮度变化:", 'augment_hsv_v', 0.0, 1.0, 0.4),
+        ]
+        
+        # 创建滑块变量
+        for label, key, from_, to, default in augment_configs:
+            setattr(self, f'{key}_var', tk.DoubleVar(value=self.training_config.get(key, default)))
+        
+        # 辅助函数：创建带数值显示、默认值标记和激活勾选框的滑块
+        def create_augment_slider(parent, label_text, var, from_, to, default, row):
+            """创建图像增强滑块控件（高对比度+默认值标记+激活勾选框）"""
+            frame = ttk.Frame(parent)
+            frame.grid(row=row, column=0, sticky=(tk.W, tk.E), pady=2)
+            frame.columnconfigure(1, weight=1)
+            
+            # 标签
+            ttk.Label(frame, text=label_text, width=8).grid(row=0, column=0, sticky=tk.W)
+            
+            # 滑块容器（包含滑块和默认值标记）
+            slider_container = tk.Frame(frame, bg='#f5f5f5')
+            slider_container.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(5, 0))
+            slider_container.columnconfigure(0, weight=1)
+            
+            # 计算默认值位置（百分比）
+            default_pct = (default - from_) / (to - from_) if to != from_ else 0
+            
+            # 使用tk.Scale以支持自定义颜色（高对比度）
+            resolution = 0.001 if to <= 1 else 0.01
+            scale = tk.Scale(slider_container, from_=from_, to=to, orient=tk.HORIZONTAL,
+                           variable=var, resolution=resolution,
+                           showvalue=False, length=90, sliderlength=14,
+                           bg='#f5f5f5', troughcolor='#888888',
+                           activebackground='#1976D2', highlightthickness=0,
+                           borderwidth=0)
+            scale.grid(row=0, column=0, sticky=(tk.W, tk.E))
+            
+            # 默认值标记（小三角形）
+            marker_frame = tk.Frame(slider_container, bg='#f5f5f5', height=8)
+            marker_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
+            marker_frame.grid_propagate(False)
+            
+            # 创建三角形标记
+            def create_marker():
+                canvas = tk.Canvas(marker_frame, bg='#f5f5f5', highlightthickness=0, 
+                                 height=8, width=90)
+                canvas.pack(fill=tk.X, expand=True)
+                
+                # 计算标记位置（考虑滑块内边距）
+                pad = 8  # 滑块左右内边距
+                avail_width = 90 - 2 * pad
+                marker_x = pad + avail_width * default_pct
+                
+                # 绘制小三角形（默认值标记）
+                canvas.create_polygon(
+                    marker_x, 0, marker_x-3, 6, marker_x+3, 6,
+                    fill='#FF5722', outline='#FF5722'
+                )
+                return canvas
+            
+            create_marker()
+            
+            # 数值显示（滑块右侧）
+            value_label = ttk.Label(frame, text=f"{var.get():.3f}", width=6, foreground='#1976D2', font=('Microsoft YaHei', 9, 'bold'))
+            value_label.grid(row=0, column=2, sticky=tk.E, padx=(5, 0))
+            
+            # 激活勾选框（数值右侧）
+            active_var = tk.BooleanVar(value=True)
+            active_check = ttk.Checkbutton(frame, text="启用", variable=active_var, width=5)
+            active_check.grid(row=0, column=3, sticky=tk.W, padx=(5, 0))
+            
+            # 勾选框状态变化时更新滑块可用状态
+            def toggle_active(*args):
+                if active_var.get():
+                    scale.config(state='normal', bg='#f5f5f5', troughcolor='#888888', activebackground='#1976D2')
+                    value_label.config(foreground='#1976D2')
+                else:
+                    scale.config(state='disabled', bg='#e0e0e0', troughcolor='#cccccc', activebackground='#cccccc')
+                    value_label.config(foreground='#999999')
+            active_var.trace_add('write', toggle_active)
+            
+            # 更新数值显示
+            def update_value(*args):
+                value_label.config(text=f"{var.get():.3f}")
+            var.trace_add('write', update_value)
+            
+            return scale, active_var
+        
+        # 创建5个滑块
+        self.augment_active_vars = {}  # 存储激活状态变量
+        for i, (label, key, from_, to, default) in enumerate(augment_configs):
+            var = getattr(self, f'{key}_var')
+            scale, active_var = create_augment_slider(right_params, label, var, from_, to, default, i)
+            self.augment_active_vars[key] = active_var
+        
+        # 应用保存的激活状态到UI
+        self.root.after(100, self._apply_saved_augment_states)
 
         # 3. 训练控制 (重新设计布局：6个按钮，2列3行)
         control_frame = ttk.Labelframe(left_col, text="训练控制", padding="10")
@@ -799,6 +895,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
 
         # 初始化环境检查状态
         self.env_check_status = None  # None: 未检查, True: 正常, False: 异常
+        self.env_check_fingerprint = None
+        self.env_last_check_time = None
 
         # ==================== 右侧列 (Right Column) ====================
         # 1. 数据集路径配置
@@ -934,7 +1032,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.training_info_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
         self.training_info_frame.columnconfigure(0, weight=0)  # 状态 - 不扩展
         self.training_info_frame.columnconfigure(1, weight=0)  # 时长 - 不扩展
-        self.training_info_frame.columnconfigure(2, weight=1)  # 按钮 - 靠右
+        self.training_info_frame.columnconfigure(2, weight=0)  # 预计完成 - 不扩展
+        self.training_info_frame.columnconfigure(3, weight=1)  # 按钮 - 靠右
 
         # 训练中进度
         if not hasattr(self, "training_status_var"):
@@ -945,6 +1044,10 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
         ttk.Label(self.training_info_frame, textvariable=self.status_duration_var, font=("Arial", 10)).grid(row=0, column=1, sticky=tk.W, padx=5)
 
+        # 预计完成时间
+        self.status_eta_var = tk.StringVar(value="预计完成: --")
+        ttk.Label(self.training_info_frame, textvariable=self.status_eta_var, font=("Arial", 10)).grid(row=0, column=2, sticky=tk.W, padx=5)
+
         # 监控大屏按钮
         ttk.Button(
             self.training_info_frame,
@@ -952,7 +1055,7 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             command=self.open_monitor_fullscreen,
             bootstyle="info",
             width=10
-        ).grid(row=0, column=2, sticky=tk.E, padx=5)
+        ).grid(row=0, column=3, sticky=tk.E, padx=5)
 
         # 保留 self.current_epoch_var 引用以防其他地方报错
         self.current_epoch_var = tk.StringVar(value="Epoch: 0/0")
@@ -1306,6 +1409,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                     self.base_model_var.trace('w', _base_model_changed)
                 except Exception:
                     pass
+        if hasattr(self, 'model_name_suffix_var'):
+            bind(self.model_name_suffix_var, 'training', 'model_name_suffix')
 
     def _on_app_close(self):
         try:
@@ -1454,6 +1559,22 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 errors.append("分辨率必须是整数")
 
         self.training_config['base_model'] = self.base_model_var.get().strip()
+        self.training_config['model_name_suffix'] = self.model_name_suffix_var.get().strip()
+        
+        # 4. 更新图像增强参数（滑块值 + 激活状态）
+        self.training_config['augment_scale'] = self.augment_scale_var.get()
+        self.training_config['augment_fliplr'] = self.augment_fliplr_var.get()
+        self.training_config['augment_hsv_h'] = self.augment_hsv_h_var.get()
+        self.training_config['augment_hsv_s'] = self.augment_hsv_s_var.get()
+        self.training_config['augment_hsv_v'] = self.augment_hsv_v_var.get()
+        
+        # 5. 更新图像增强激活状态
+        self.training_config['augment_scale_active'] = self.augment_active_vars['augment_scale'].get()
+        self.training_config['augment_fliplr_active'] = self.augment_active_vars['augment_fliplr'].get()
+        self.training_config['augment_hsv_h_active'] = self.augment_active_vars['augment_hsv_h'].get()
+        self.training_config['augment_hsv_s_active'] = self.augment_active_vars['augment_hsv_s'].get()
+        self.training_config['augment_hsv_v_active'] = self.augment_active_vars['augment_hsv_v'].get()
+        
         return errors
 
     def update_server_config(self):
@@ -3594,6 +3715,19 @@ PY"""
         learning_rate = self.training_config['learning_rate']
         image_size = self.training_config['image_size']
         base_model = self.training_config['base_model']
+        model_name_suffix = self.training_config.get('model_name_suffix', '')
+        # 图像增强参数
+        augment_scale = self.training_config.get('augment_scale', 0.5)
+        augment_fliplr = self.training_config.get('augment_fliplr', 0.5)
+        augment_hsv_h = self.training_config.get('augment_hsv_h', 0.015)
+        augment_hsv_s = self.training_config.get('augment_hsv_s', 0.7)
+        augment_hsv_v = self.training_config.get('augment_hsv_v', 0.4)
+        # 图像增强激活状态
+        augment_scale_active = self.training_config.get('augment_scale_active', True)
+        augment_fliplr_active = self.training_config.get('augment_fliplr_active', True)
+        augment_hsv_h_active = self.training_config.get('augment_hsv_h_active', True)
+        augment_hsv_s_active = self.training_config.get('augment_hsv_s_active', True)
+        augment_hsv_v_active = self.training_config.get('augment_hsv_v_active', True)
         
         script_content = f'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
@@ -3603,15 +3737,26 @@ PY"""
 类别数: {num_classes}
 生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 训练参数: epochs={epochs}, batch={batch_size}, lr={learning_rate}
+增强参数: scale={augment_scale}, fliplr={augment_fliplr}, hsv_h={augment_hsv_h}, hsv_s={augment_hsv_s}, hsv_v={augment_hsv_v}
 """
 
 import os
 import sys
 os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+# 训练阶段禁止任何自动拉包（由GUI环境检查/修复阶段统一处理）
+os.environ["YOLO_AUTOINSTALL"] = "0"
+os.environ["ULTRALYTICS_AUTOINSTALL"] = "0"
 import torch
+import tensorflow as tf
 import yaml
+import json
+import re
+import zipfile
+import shutil
+import time
 from ultralytics import YOLO
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 import logging
 
 # 设置日志
@@ -3718,6 +3863,19 @@ def main():
         except Exception:
             device_arg = 'cpu'
         # 若设备选择仍报错，降级为CPU重试
+        # 构建增强参数字典（仅包含激活的增强）
+        augment_kwargs = {{}}
+        if {augment_scale_active}:
+            augment_kwargs['scale'] = {augment_scale}
+        if {augment_fliplr_active}:
+            augment_kwargs['fliplr'] = {augment_fliplr}
+        if {augment_hsv_h_active}:
+            augment_kwargs['hsv_h'] = {augment_hsv_h}
+        if {augment_hsv_s_active}:
+            augment_kwargs['hsv_s'] = {augment_hsv_s}
+        if {augment_hsv_v_active}:
+            augment_kwargs['hsv_v'] = {augment_hsv_v}
+        
         try:
             results = model.train(
             data=yaml_path,
@@ -3731,7 +3889,8 @@ def main():
             save=True,
             save_period=10,
             val=True,
-            plots=True
+            plots=True,
+            **augment_kwargs
             )
         except Exception as dev_err:
             logger.warning(f"设备设置失败({{dev_err}})，切换为CPU重试...")
@@ -3747,14 +3906,245 @@ def main():
                 save=True,
                 save_period=10,
                 val=True,
-                plots=True
+                plots=True,
+                **augment_kwargs
             )
         
-        logger.info("训练完成！")
-        return results
+        logger.info("训练完成，开始导出模型...")
+        run_dir = None
+        try:
+            run_dir = str(getattr(getattr(model, "trainer", None), "save_dir", ""))
+        except Exception:
+            run_dir = ""
+        run_dir = run_dir or '/root/runs/train/yolo_training_{timestamp}'
+        best_candidates = [
+            os.path.join(run_dir, 'weights', 'best.pt'),
+            '/root/runs/train/yolo_training_{timestamp}/weights/best.pt'
+        ]
+        best_pt = None
+        for p in best_candidates:
+            if os.path.exists(p):
+                best_pt = p
+                break
+        if not best_pt:
+            raise Exception(f"未找到best.pt，候选路径: {{best_candidates}}")
+        logger.info(f"best.pt路径: {{best_pt}}")
+
+        def sanitize_name_suffix(text):
+            clean = re.sub(r'[^0-9A-Za-z_\\-一-龥]+', '_', str(text or '').strip())
+            clean = re.sub(r'_+', '_', clean).strip('_-')
+            return clean[:64]
+
+        def ensure_unique_path(path):
+            if not os.path.exists(path):
+                return path
+            base, ext = os.path.splitext(path)
+            idx = 1
+            while True:
+                candidate = f"{{base}}_{{idx}}{{ext}}"
+                if not os.path.exists(candidate):
+                    return candidate
+                idx += 1
+
+        # 统一命名尾缀：命名_时间戳
+        safe_suffix = sanitize_name_suffix({model_name_suffix!r})
+        # 命名时间戳统一使用东八区（UTC+8）
+        def cn_now():
+            return datetime.now(timezone(timedelta(hours=8)))
+
+        artifact_stamp = cn_now().strftime("%Y%m%d_%H%M%S")
+        name_part = safe_suffix if safe_suffix else "model"
+        artifact_tag = f"{{name_part}}_{{artifact_stamp}}"
+        renamed_best = ensure_unique_path(os.path.join(os.path.dirname(best_pt), f"best_{{artifact_tag}}.pt"))
+        os.replace(best_pt, renamed_best)
+        best_pt = renamed_best
+        logger.info(f"best.pt已重命名: {{best_pt}}")
+
+        export_status = {{"onnx": False, "tflite": False}}
+        export_outputs = {{}}
+        export_model = YOLO(best_pt)
+        common_export_kwargs = {{
+            "imgsz": {image_size},
+            "batch": 1,
+            "dynamic": False,
+            "simplify": False
+        }}
+
+        def normalize_saved_model_dir(saved_out):
+            saved_dir = str(saved_out)
+            if saved_dir.endswith('.pb'):
+                saved_dir = os.path.dirname(saved_dir)
+            if not os.path.isdir(saved_dir):
+                raise Exception(f"未找到SavedModel目录: {{saved_dir}}")
+            return saved_dir
+
+        def export_tflite_pair_from_saved_model(saved_dir):
+            stem = os.path.splitext(os.path.basename(best_pt))[0]
+            out_dir = os.path.dirname(best_pt)
+            fp32_path = os.path.join(out_dir, f"{{stem}}_float32.tflite")
+            fp16_path = os.path.join(out_dir, f"{{stem}}_float16.tflite")
+
+            converter32 = tf.lite.TFLiteConverter.from_saved_model(saved_dir)
+            converter32.experimental_new_converter = True
+            tflite32 = converter32.convert()
+            with open(fp32_path, "wb") as f:
+                f.write(tflite32)
+
+            converter16 = tf.lite.TFLiteConverter.from_saved_model(saved_dir)
+            converter16.experimental_new_converter = True
+            converter16.optimizations = [tf.lite.Optimize.DEFAULT]
+            converter16.target_spec.supported_types = [tf.float16]
+            tflite16 = converter16.convert()
+            with open(fp16_path, "wb") as f:
+                f.write(tflite16)
+            return fp32_path, fp16_path
+
+        for fmt in ["onnx", "tflite"]:
+            try:
+                logger.info(f"开始导出格式: {{fmt}}")
+                if fmt == "onnx":
+                    out = export_model.export(format="onnx", **common_export_kwargs)
+                    export_status[fmt] = True
+                    export_outputs[fmt] = str(out)
+                    logger.info(f"{{fmt}}导出成功: {{out}}")
+                else:
+                    # tflite 目标：稳定产出 FP32 + FP16；导出阶段强制CPU规避GPU侧偶发转换异常
+                    tflite_rounds = 3
+                    tflite_last_err = None
+                    for round_idx in range(1, tflite_rounds + 1):
+                        logger.info(f"tflite导出第{{round_idx}}/{{tflite_rounds}}轮...")
+                        prev_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+                        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+                        try:
+                            saved_out = export_model.export(format="saved_model", **common_export_kwargs)
+                            saved_dir = normalize_saved_model_dir(saved_out)
+                            fp32_path, fp16_path = export_tflite_pair_from_saved_model(saved_dir)
+                            export_status[fmt] = True
+                            export_outputs["tflite"] = fp32_path
+                            export_outputs["tflite_fp32"] = fp32_path
+                            export_outputs["tflite_fp16"] = fp16_path
+                            logger.info(f"tflite导出成功(fp32): {{fp32_path}}")
+                            logger.info(f"tflite导出成功(fp16): {{fp16_path}}")
+                            break
+                        except Exception as round_err:
+                            tflite_last_err = round_err
+                            logger.warning(f"tflite导出第{{round_idx}}轮失败: {{round_err}}")
+                            if round_idx < tflite_rounds:
+                                wait_sec = round_idx * 3
+                                logger.info(f"等待{{wait_sec}}秒后重试tflite导出...")
+                                time.sleep(wait_sec)
+                        finally:
+                            if prev_cuda_visible is None:
+                                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                            else:
+                                os.environ["CUDA_VISIBLE_DEVICES"] = prev_cuda_visible
+                    if not export_status[fmt]:
+                        raise Exception(f"tflite多轮重试失败: {{tflite_last_err}}")
+            except Exception as export_err:
+                export_outputs[fmt] = f"ERROR: {{export_err}}"
+                logger.error(f"{{fmt}}导出失败: {{export_err}}")
+
+        logger.info("导出结果: " + json.dumps({{"status": export_status, "outputs": export_outputs}}, ensure_ascii=False))
+        # 导出成功判定：ONNX为必需，TFLite为可选（失败仅告警，不中断训练与打包）
+        if not export_status.get("onnx", False):
+            raise Exception(f"导出失败: {{export_status}}")
+        if not export_status.get("tflite", False):
+            logger.warning("tflite导出失败（可选项），已继续执行并保留pt/onnx与完整zip打包")
+        
+        # 训练产物统一打包：ZIP名=命名_时间戳，ZIP内文件统一追加同一尾缀
+        def get_dataset_class_label(yaml_file):
+            try:
+                with open(yaml_file, "r", encoding="utf-8") as rf:
+                    y = yaml.safe_load(rf) or {{}}
+                names = y.get("names")
+                label = None
+                if isinstance(names, dict) and names:
+                    def _k_sort(v):
+                        sv = str(v)
+                        return (0, int(sv)) if sv.isdigit() else (1, sv)
+                    first_key = sorted(names.keys(), key=_k_sort)[0]
+                    label = names.get(first_key)
+                elif isinstance(names, list) and names:
+                    label = names[0]
+                safe_label = sanitize_name_suffix(label)
+                return safe_label if safe_label else "dataset"
+            except Exception:
+                return "dataset"
+
+        def build_tagged_name(src_path, tag, dataset_label):
+            base = os.path.basename(src_path)
+            stem, ext = os.path.splitext(base)
+            if base.lower() == "dataset.yaml":
+                return f"{{dataset_label}}_{{tag}}.yaml"
+            # 已包含同一tag时不再叠加（例如 best_xxx_float32.tflite 中间已带 xxx=命名_时间戳）
+            if stem.endswith(f"_{{tag}}") or (f"_{{tag}}_" in stem) or stem.startswith(f"{{tag}}_"):
+                return base
+            return f"{{stem}}_{{tag}}{{ext}}"
+
+        pack_temp_dir = f"/tmp/train_pack_{{artifact_tag}}"
+        if os.path.isdir(pack_temp_dir):
+            shutil.rmtree(pack_temp_dir, ignore_errors=True)
+        os.makedirs(pack_temp_dir, exist_ok=True)
+        to_pack = []
+        seen = set()
+
+        def add_pack_file(path):
+            if not path or (not os.path.isfile(path)):
+                return
+            real = os.path.realpath(path)
+            if real in seen:
+                return
+            seen.add(real)
+            to_pack.append(path)
+
+        add_pack_file(best_pt)
+        for p in export_outputs.values():
+            if isinstance(p, str) and p and (not p.startswith("ERROR:")) and os.path.isfile(p):
+                add_pack_file(p)
+
+        # 常见训练附带文件（若存在则一并打包）
+        for rel_name in [
+            "args.yaml",
+            "results.csv",
+            "results.png",
+            "confusion_matrix.png",
+            "F1_curve.png",
+            "P_curve.png",
+            "PR_curve.png",
+            "R_curve.png",
+        ]:
+            add_pack_file(os.path.join(run_dir, rel_name))
+        add_pack_file(yaml_path)
+
+        dataset_label = get_dataset_class_label(yaml_path)
+        used_names = set()
+        staged_files = []
+        for src in to_pack:
+            tagged_name = build_tagged_name(src, artifact_tag, dataset_label)
+            unique_name = tagged_name
+            stem, ext = os.path.splitext(tagged_name)
+            i = 1
+            while unique_name in used_names:
+                unique_name = f"{{stem}}_{{i}}{{ext}}"
+                i += 1
+            used_names.add(unique_name)
+            dst = os.path.join(pack_temp_dir, unique_name)
+            shutil.copy2(src, dst)
+            staged_files.append(dst)
+
+        zip_path = ensure_unique_path(os.path.join(run_dir, f"{{artifact_tag}}.zip"))
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for fp in staged_files:
+                zf.write(fp, arcname=os.path.basename(fp))
+        shutil.rmtree(pack_temp_dir, ignore_errors=True)
+        export_outputs["zip"] = zip_path
+        logger.info(f"训练产物ZIP已生成: {{zip_path}}")
+        logger.info("FINAL_STATUS: SUCCESS")
+        return {{"train_results": str(results), "exports": export_outputs}}
         
     except Exception as e:
         logger.error(f"训练失败: {{e}}")
+        logger.error("FINAL_STATUS: FAILED")
         raise
 
 if __name__ == "__main__":
@@ -4278,6 +4668,172 @@ print(json.dumps(res, ensure_ascii=False))"""
 
             threading.Thread(target=clean_thread, daemon=True).start()
 
+    def _get_env_spec(self):
+        """环境单一规则源：检查、修复、训练前门禁全部复用"""
+        return {
+            "system_packages": ["libgl1-mesa-glx", "libglib2.0-0", "libusb-1.0-0"],
+            "python_packages": [
+                {"name": "pyyaml", "pip": "pyyaml", "import_cmd": 'import yaml; print("OK")'},
+                {"name": "numpy", "pip": "numpy==1.26.4", "import_cmd": "import numpy; print(numpy.__version__)", "min_ver": "1.26.0", "max_ver": "2.0.0"},
+                {"name": "cv2", "pip": "opencv-python==4.7.0.72", "import_cmd": "import cv2; print(cv2.__version__)"},
+                {"name": "PIL", "pip": "pillow", "import_cmd": "from PIL import Image; print(Image.__version__)"},
+                {"name": "torch", "pip": "torch", "import_cmd": "import torch; print(torch.__version__)"},
+                {"name": "ultralytics", "pip": "ultralytics", "import_cmd": "import ultralytics; print(ultralytics.__version__)"},
+                {"name": "matplotlib", "pip": "matplotlib", "import_cmd": "import matplotlib; print(matplotlib.__version__)"},
+                {"name": "onnx", "pip": "onnx==1.16.1", "import_cmd": "import onnx; print(onnx.__version__)", "exact_ver": "1.16.1"},
+                {"name": "onnxsim", "pip": "onnxsim", "import_cmd": "import onnxsim; print(onnxsim.__version__)"},
+                # onnx2tf 在新版本链路中依赖 ai_edge_litert
+                {"name": "ai_edge_litert", "pip": "ai-edge-litert", "import_cmd": "import ai_edge_litert; print(getattr(ai_edge_litert, '__version__', 'OK'))"},
+                # onnx2tf 在 TensorFlow 2.19 环境下通常还需要独立的 tf_keras 包
+                {"name": "tf_keras", "pip": "tf-keras>=2.19,<2.20", "import_cmd": "import tf_keras; print(getattr(tf_keras, '__version__', 'OK'))", "min_ver": "2.19.0", "max_ver": "2.20.0"},
+                {"name": "onnx2tf", "pip": "onnx2tf>=1.28.8,<1.29", "import_cmd": "import onnx2tf; print(getattr(onnx2tf, '__version__', 'OK'))", "min_ver": "1.28.8", "max_ver": "1.29.0"},
+                {"name": "sng4onnx", "pip": "sng4onnx>=1.0.1", "import_cmd": "import sng4onnx; print(getattr(sng4onnx, '__version__', 'OK'))"},
+                {"name": "onnx_graphsurgeon", "pip": "onnx_graphsurgeon>=0.3.26", "import_cmd": "import onnx_graphsurgeon as gs; print(getattr(gs, '__version__', 'OK'))"},
+                # 当前云端镜像下 tflite_support 与部分 TF 组合存在 pybind 冲突，先降级为可选依赖
+                {"name": "tflite_support", "pip": "tflite_support", "import_cmd": "import tflite_support; print(getattr(tflite_support, '__version__', 'OK'))", "optional": True},
+                {"name": "onnxruntime", "pip": "onnxruntime-gpu", "import_cmd": "import onnxruntime as ort; print(ort.__version__)"},
+                {"name": "flatbuffers", "pip": "flatbuffers", "import_cmd": "import flatbuffers; print(getattr(flatbuffers, '__version__', 'OK'))"},
+                # Ultralytics 导出链要求 protobuf>=5；TensorFlow 2.19 要求 protobuf<6
+                {"name": "protobuf", "pip": "protobuf>=5,<6", "import_cmd": "from google.protobuf import __version__ as v; print(v)", "min_ver": "5.0.0", "max_ver": "6.0.0"},
+                {"name": "h5py", "pip": "h5py", "import_cmd": "import h5py; print(h5py.__version__)"},
+                {"name": "tensorflow", "pip": "tensorflow>=2.19,<2.20", "import_cmd": "import tensorflow as tf; print(tf.__version__)", "min_ver": "2.19.0", "max_ver": "2.20.0"},
+            ],
+            "system_libs": [
+                {"name": "libGL.so.1", "check_cmd": "ldconfig -p | grep libGL.so.1", "hint": "OpenCV需要", "fix_pkg": "libgl1-mesa-glx"},
+                {"name": "libusb-1.0.so.0", "check_cmd": "ldconfig -p | grep libusb-1.0.so.0", "hint": "tflite_support需要", "fix_pkg": "libusb-1.0-0"},
+            ],
+        }
+
+    def _first_import_error_line(self, text):
+        lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+        if not lines:
+            return "无详细错误信息"
+        for ln in lines:
+            if any(k in ln for k in ["ImportError:", "ModuleNotFoundError:", "OSError:", "RuntimeError:", "TypeError:", "ValueError:", "Exception:", "Error:"]):
+                return ln[:220]
+        for ln in lines:
+            # 过滤 TensorFlow 常见信息日志，避免误报为错误首行
+            if self._is_benign_import_stderr_line(ln):
+                continue
+            if ln.startswith("Traceback") or ln.startswith("File "):
+                continue
+            return ln[:220]
+        return lines[-1][:220]
+
+    def _is_benign_import_stderr_line(self, line):
+        t = (line or "").strip()
+        if not t:
+            return True
+        lower = t.lower()
+        benign_prefixes = [
+            "i tensorflow/",
+            "w0000",
+            "e0000",
+            "warning:",
+            "all log messages before absl::initializelog() is called are written to stderr",
+        ]
+        if any(lower.startswith(p) for p in benign_prefixes):
+            return True
+        benign_contains = [
+            "onednn custom operations are on",
+            "unable to register cufft factory",
+            "unable to register cudnn factory",
+            "unable to register cublas factory",
+            "computation placer already registered",
+            "this tensorflow binary is optimized to use available cpu instructions",
+            "to enable the following instructions:",
+        ]
+        if any(x in lower for x in benign_contains):
+            return True
+        return False
+
+    def _ver_tuple(self, version_text):
+        nums = []
+        for seg in str(version_text or "").split("."):
+            seg = "".join(ch for ch in seg if ch.isdigit())
+            if not seg:
+                break
+            nums.append(int(seg))
+        return tuple(nums[:3] or [0])
+
+    def _version_reason(self, current, spec):
+        cur = str(current or "").strip()
+        if not cur:
+            return "无法读取版本"
+        exact_ver = spec.get("exact_ver")
+        min_ver = spec.get("min_ver")
+        max_ver = spec.get("max_ver")
+        if exact_ver and cur != exact_ver:
+            return f"版本不匹配({cur})，需 =={exact_ver}"
+        cur_t = self._ver_tuple(cur)
+        if min_ver and cur_t < self._ver_tuple(min_ver):
+            return f"版本过低({cur})，需 >={min_ver}"
+        if max_ver and cur_t >= self._ver_tuple(max_ver):
+            return f"版本过高({cur})，需 <{max_ver}"
+        return ""
+
+    def _run_env_check_with_spec(self, ssh, python_cmd, log=True):
+        spec = self._get_env_spec()
+        missing = []
+        versions = {}
+
+        def _log(msg):
+            if log:
+                self.root.after(0, lambda m=msg: self.log_message(m))
+
+        stdin, stdout, stderr = ssh.exec_command(f"{python_cmd} --version")
+        py_ver = stdout.read().decode("utf-8", errors="ignore").strip()
+        versions["python"] = py_ver or "unknown"
+        _log(f"✓ Python版本: {versions['python']}")
+
+        for pkg in spec["python_packages"]:
+            is_optional = bool(pkg.get("optional"))
+            escaped_cmd = pkg["import_cmd"].replace('"', '\\"')
+            stdin, stdout, stderr = ssh.exec_command(f'{python_cmd} -c "{escaped_cmd}"')
+            output = stdout.read().decode("utf-8", errors="ignore").strip()
+            error = stderr.read().decode("utf-8", errors="ignore").strip()
+            code = stdout.channel.recv_exit_status()
+            merged = "\n".join([x for x in [output, error] if x]).strip()
+            has_import_error = any(k in merged for k in ["ModuleNotFoundError", "ImportError", "Traceback", "Exception", "TypeError", "ValueError"])
+            benign_stderr = all(self._is_benign_import_stderr_line(ln) for ln in error.splitlines()) if error else True
+            if code != 0 or has_import_error or (not output and not benign_stderr):
+                reason = self._first_import_error_line(merged)
+                if is_optional:
+                    versions[pkg["name"]] = f"OPTIONAL_FAIL:{reason[:60]}"
+                    _log(f"  ⚠ {pkg['name']}: 可选依赖不可用（{reason}）")
+                else:
+                    missing.append({"type": "python", "name": pkg["name"], "reason": reason, "pip": pkg["pip"]})
+                    _log(f"  ❌ {pkg['name']}: 未安装/不可用（{reason}）")
+                continue
+            cur_ver = str(output).splitlines()[0].strip() if output else "OK"
+            versions[pkg["name"]] = cur_ver
+            ver_reason = self._version_reason(cur_ver, pkg)
+            if ver_reason:
+                missing.append({"type": "python", "name": pkg["name"], "reason": ver_reason, "pip": pkg["pip"]})
+                _log(f"  ❌ {pkg['name']}: {ver_reason}")
+            else:
+                _log(f"  ✅ {pkg['name']}: {cur_ver}")
+
+        _log("检查系统库...")
+        for lib in spec["system_libs"]:
+            stdin, stdout, stderr = ssh.exec_command(lib["check_cmd"])
+            found = stdout.read().decode("utf-8", errors="ignore").strip()
+            if found:
+                versions[lib["name"]] = "OK"
+                _log(f"  ✅ {lib['name']}: 已安装")
+            else:
+                versions[lib["name"]] = "MISSING"
+                reason = f"未安装（{lib['hint']}）"
+                missing.append({"type": "system", "name": lib["name"], "reason": reason, "pip": lib["fix_pkg"]})
+                _log(f"  ❌ {lib['name']}: {reason}")
+
+        fingerprint_items = [f"{k}={versions[k]}" for k in sorted(versions.keys())]
+        return {
+            "missing": missing,
+            "versions": versions,
+            "fingerprint": "|".join(fingerprint_items),
+        }
+
     def check_environment(self):
         """检查云端环境"""
         if not self.is_connected:
@@ -4301,99 +4857,52 @@ print(json.dumps(res, ensure_ascii=False))"""
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 ssh.connect(**connect_params, timeout=15)
 
-                # 使用优化的Python环境检测
                 def log_callback(msg):
                     self.root.after(0, lambda m=msg: self.log_message(m))
 
                 python_cmd = self.get_python_cmd_with_fallback(ssh, log_func=log_callback)
-
                 if not python_cmd:
                     self.root.after(0, lambda: self.log_message("✗ 未找到可用的Python环境"))
                     self.root.after(0, lambda: self._set_env_check_status(False))
                     ssh.close()
                     return
 
-                self.root.after(0, lambda: self.log_message(f"✓ Python命令: {python_cmd}"))
-
-                # 检查Python版本
-                stdin, stdout, stderr = ssh.exec_command(f'{python_cmd} --version')
-                version = stdout.read().decode().strip()
-                self.root.after(0, lambda: self.log_message(f"✓ Python版本: {version}"))
-
-                # 检查必要的包
-                required_packages = {
-                    'numpy': 'import numpy; print(numpy.__version__)',
-                    'cv2': 'import cv2; print(cv2.__version__)',
-                    'PIL': 'from PIL import Image; print(Image.__version__)',
-                    'yaml': 'import yaml; print("OK")',
-                    'torch': 'import torch; print(torch.__version__)',
-                    'ultralytics': 'import ultralytics; print(ultralytics.__version__)',
-                    'matplotlib': 'import matplotlib; print(matplotlib.__version__)'
-                }
-
-                missing_packages = []
-                installed_packages = []
-
-                for pkg_name, import_cmd in required_packages.items():
-                    stdin, stdout, stderr = ssh.exec_command(f"{python_cmd} -c '{import_cmd}' 2>&1")
-                    output = stdout.read().decode().strip()
-                    error = stderr.read().decode().strip()
-
-                    # 优先检查错误，如果包含模块未找到错误，则判定为未安装
-                    if error and ('ModuleNotFoundError' in error or 'ImportError' in error):
-                        missing_packages.append(pkg_name)
-                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
-                    elif output and not ('Traceback' in output or 'Error' in output or 'ModuleNotFoundError' in output):
-                        # 输出正常且不包含错误信息
-                        installed_packages.append(f"{pkg_name}: {output}")
-                        self.root.after(0, lambda p=pkg_name, v=output: self.log_message(f"  ✅ {p}: {v}"))
-                    elif output and ('Traceback' in output or 'ModuleNotFoundError' in output):
-                        # 输出中包含错误信息
-                        missing_packages.append(pkg_name)
-                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
-                    else:
-                        # 无输出也无错误，视为未安装
-                        missing_packages.append(pkg_name)
-                        self.root.after(0, lambda p=pkg_name: self.log_message(f"  ❌ {p}: 未安装"))
-
-                # 检查系统库（OpenCV依赖）
-                self.root.after(0, lambda: self.log_message("检查系统库..."))
-                stdin, stdout, stderr = ssh.exec_command("ldconfig -p | grep libGL.so.1")
-                libgl = stdout.read().decode().strip()
-                if libgl:
-                    self.root.after(0, lambda: self.log_message("  ✅ libGL.so.1: 已安装"))
-                else:
-                    self.root.after(0, lambda: self.log_message("  ❌ libGL.so.1: 未安装（OpenCV需要）"))
-                    missing_packages.append("libgl1-mesa-glx")
-
+                self.root.after(0, lambda p=python_cmd: self.log_message(f"✓ Python命令: {p}"))
+                result = self._run_env_check_with_spec(ssh, python_cmd, log=True)
                 ssh.close()
 
-                # 汇总结果
                 self.root.after(0, lambda: self.log_message("-" * 60))
-                if missing_packages:
-                    self.root.after(0, lambda: self.log_message(f"⚠ 发现 {len(missing_packages)} 个问题需要修复"))
+                if result["missing"]:
+                    self.root.after(0, lambda c=len(result["missing"]): self.log_message(f"⚠ 发现 {c} 个问题需要修复"))
                     self.root.after(0, lambda: self._set_env_check_status(False))
+                    self.env_check_fingerprint = None
+                    self.env_last_check_time = time.time()
                 else:
                     self.root.after(0, lambda: self.log_message("✓ 环境检查通过，所有组件正常"))
                     self.root.after(0, lambda: self._set_env_check_status(True))
+                    self.env_check_fingerprint = result["fingerprint"]
+                    self.env_last_check_time = time.time()
 
                 self.root.after(0, lambda: self.log_message("=" * 60))
 
             except Exception as e:
-                self.root.after(0, lambda: self.log_message(f"✗ 环境检查失败: {e}"))
+                self.root.after(0, lambda err=str(e): self.log_message(f"✗ 环境检查失败: {err}"))
                 self.root.after(0, lambda: self._set_env_check_status(False))
+                self.env_check_fingerprint = None
+                self.env_last_check_time = None
 
         threading.Thread(target=check_thread, daemon=True).start()
 
     def _set_env_check_status(self, status):
         """设置环境检查状态并更新修复按钮"""
         self.env_check_status = status
-        if status:
-            # 环境正常，修复按钮保持灰色
+        if status is True:
             self.fix_env_button.configure(state="disabled")
-        else:
-            # 环境异常，修复按钮变为可用
+        elif status is False:
             self.fix_env_button.configure(state="normal")
+        else:
+            # 未检查状态不允许直接修复，先执行检查拿到差异清单
+            self.fix_env_button.configure(state="disabled")
 
     def fix_environment(self):
         """修复云端环境"""
@@ -4433,29 +4942,121 @@ print(json.dumps(res, ensure_ascii=False))"""
                 if not python_cmd:
                     self.root.after(0, lambda: self.log_message("✗ 未找到Python环境，无法修复"))
                     return
+                self.root.after(0, lambda p=python_cmd: self.log_message(f"✓ 修复使用Python: {p}"))
 
-                # 安装系统库
-                self.root.after(0, lambda: self.log_message("安装系统库..."))
-                stdin, stdout, stderr = ssh.exec_command("apt-get update -qq && apt-get install -y libgl1-mesa-glx libglib2.0-0 -qq")
-                stdout.read()
-                self.root.after(0, lambda: self.log_message("✓ 系统库安装完成"))
+                # 先按统一规则源检查，仅修复缺失项
+                spec = self._get_env_spec()
+                before_result = self._run_env_check_with_spec(ssh, python_cmd, log=False)
+                if not before_result["missing"]:
+                    self.root.after(0, lambda: self.log_message("✓ 当前环境已通过统一检查，无需修复"))
+                    self.env_check_fingerprint = before_result["fingerprint"]
+                    self.env_last_check_time = time.time()
+                    self.root.after(0, lambda: self._set_env_check_status(True))
+                    ssh.close()
+                    return
 
-                # 安装Python包
-                packages_to_install = ['pyyaml', 'opencv-python', 'ultralytics', 'matplotlib']
+                missing_system_pkgs = []
+                missing_python_names = set()
+                for item in before_result["missing"]:
+                    if item.get("type") == "system" and item.get("pip"):
+                        missing_system_pkgs.append(item["pip"])
+                    elif item.get("type") == "python":
+                        missing_python_names.add(item.get("name"))
+                # 系统库仍按规格白名单安装，但优先只装缺失项，避免无意义重复
+                system_pkg_list = []
+                for p in spec["system_packages"]:
+                    if p in missing_system_pkgs:
+                        system_pkg_list.append(p)
+                if system_pkg_list:
+                    system_pkg_str = " ".join(system_pkg_list)
+                    self.root.after(0, lambda s=system_pkg_str: self.log_message(f"安装系统库: {s}"))
+                    stdin, stdout, stderr = ssh.exec_command(f"apt-get update -qq && apt-get install -y {system_pkg_str} -qq")
+                    sys_out = stdout.read().decode('utf-8', errors='ignore').strip()
+                    sys_err = stderr.read().decode('utf-8', errors='ignore').strip()
+                    sys_code = stdout.channel.recv_exit_status()
+                else:
+                    sys_out = ""
+                    sys_err = ""
+                    sys_code = 0
+                def _is_benign_apt_line(line):
+                    t = (line or "").strip().lower()
+                    if not t:
+                        return True
+                    # 常见非致命提示：容器/精简系统缺少 apt-utils 时会出现
+                    if "debconf: delaying package configuration, since apt-utils is not installed" in t:
+                        return True
+                    if t.startswith("debconf:"):
+                        return True
+                    if "warning" in t:
+                        return True
+                    return False
+                sys_err_fatal = [ln for ln in sys_err.splitlines() if not _is_benign_apt_line(ln)]
+                if sys_code != 0 or sys_err_fatal:
+                    first_err = (sys_err_fatal[0] if sys_err_fatal else sys_err or sys_out or f"exit={sys_code}")[:260]
+                    raise RuntimeError(f"系统库安装失败: {first_err}")
+                if system_pkg_list:
+                    self.root.after(0, lambda: self.log_message("✓ 系统库安装完成"))
+                else:
+                    self.root.after(0, lambda: self.log_message("✓ 系统库均已满足，跳过安装"))
+
+                # 按单一规格源安装缺失Python包（含版本不符）
+                required_python_packages = [item for item in spec["python_packages"] if (not item.get("optional")) and item.get("name") in missing_python_names]
+                optional_python_packages = [item for item in spec["python_packages"] if item.get("optional")]
+                packages_to_install = [item["pip"] for item in required_python_packages]
+                if optional_python_packages:
+                    optional_names = ", ".join([x["name"] for x in optional_python_packages])
+                    self.root.after(0, lambda n=optional_names: self.log_message(f"⚠ 跳过可选依赖安装: {n}"))
+                install_failed = []
+                if packages_to_install:
+                    self.root.after(0, lambda c=len(packages_to_install): self.log_message(f"按统一检查结果修复Python依赖，共 {c} 项"))
                 for pkg in packages_to_install:
                     self.root.after(0, lambda p=pkg: self.log_message(f"安装 {p}..."))
-                    stdin, stdout, stderr = ssh.exec_command(f"{python_cmd} -m pip install {pkg} -q")
-                    stdout.read()
-                    self.root.after(0, lambda p=pkg: self.log_message(f"✓ {p} 安装完成"))
+                    stdin, stdout, stderr = ssh.exec_command(f'{python_cmd} -m pip install "{pkg}" -q')
+                    out = stdout.read().decode('utf-8', errors='ignore').strip()
+                    err = stderr.read().decode('utf-8', errors='ignore').strip()
+                    code = stdout.channel.recv_exit_status()
+                    err_fatal = [ln for ln in err.splitlines() if ln.strip() and 'warning' not in ln.lower()]
+                    if code != 0 or err_fatal:
+                        recheck_ok = False
+                        for spec_item in spec["python_packages"]:
+                            if spec_item["pip"] == pkg:
+                                escaped_recheck = spec_item["import_cmd"].replace('"', '\\"')
+                                stdin2, stdout2, stderr2 = ssh.exec_command(f'{python_cmd} -c "{escaped_recheck}"')
+                                re_out = stdout2.read().decode('utf-8', errors='ignore').strip()
+                                re_err = stderr2.read().decode('utf-8', errors='ignore').strip()
+                                re_merged = "\n".join([x for x in [re_out, re_err] if x]).strip()
+                                recheck_ok = bool(re_out) and not any(k in re_merged for k in ["Traceback", "ModuleNotFoundError", "ImportError", "Exception"])
+                                break
+                        if recheck_ok:
+                            self.root.after(0, lambda p=pkg: self.log_message(f"⚠ {p} 安装有冲突提示，但导入可用，继续执行"))
+                        else:
+                            reason = (err_fatal[0] if err_fatal else err or out or f"exit={code}")[:260]
+                            install_failed.append((pkg, reason))
+                            self.root.after(0, lambda p=pkg, r=reason: self.log_message(f"✗ {p} 安装失败: {r}"))
+                    else:
+                        self.root.after(0, lambda p=pkg: self.log_message(f"✓ {p} 安装完成"))
+                if (not packages_to_install):
+                    self.root.after(0, lambda: self.log_message("✓ Python依赖均已满足，跳过安装"))
+
+                if install_failed:
+                    bad = "; ".join([f"{p}: {r}" for p, r in install_failed])[:420]
+                    raise RuntimeError(f"以下包安装失败: {bad}")
+
+                # 修复后按同一规则源复检，直接给出可训练状态
+                verify_result = self._run_env_check_with_spec(ssh, python_cmd, log=False)
+                if verify_result["missing"]:
+                    bad = "; ".join([f"{x['name']}: {x['reason']}" for x in verify_result["missing"]])[:420]
+                    raise RuntimeError(f"修复后复检仍失败: {bad}")
 
                 ssh.close()
 
                 self.root.after(0, lambda: self.log_message("=" * 60))
-                self.root.after(0, lambda: self.log_message("✓ 环境修复完成，请重新检查环境"))
+                self.root.after(0, lambda: self.log_message("✓ 环境修复完成，复检通过"))
                 self.root.after(0, lambda: self.log_message("=" * 60))
 
-                # 修复完成后，重置状态为未检查
-                self.root.after(0, lambda: self._set_env_check_status(None))
+                self.env_check_fingerprint = verify_result["fingerprint"]
+                self.env_last_check_time = time.time()
+                self.root.after(0, lambda: self._set_env_check_status(True))
 
             except Exception as e:
                 self.root.after(0, lambda: self.log_message(f"✗ 环境修复失败: {e}"))
@@ -4570,6 +5171,9 @@ print(json.dumps(res, ensure_ascii=False))"""
             messagebox.showwarning("提示", "请先上传数据集并通过云端验收")
             self.update_action_button_states()
             return
+        if self.env_check_status is not True:
+            messagebox.showwarning("提示", "请先执行并通过【检查环境】（或先点【修复环境】后复检通过）")
+            return
         
         def training_thread():
             try:
@@ -4577,6 +5181,12 @@ print(json.dumps(res, ensure_ascii=False))"""
                 self.is_training = True
                 self.root.after(0, self.update_training_button_state)
                 self.training_start_time = time.time()
+                self._last_eta_epoch = None
+                self._last_eta_total = None
+                if hasattr(self, "status_duration_var"):
+                    self.root.after(0, lambda: self.status_duration_var.set("时长: 00:00:00"))
+                if hasattr(self, "status_eta_var"):
+                    self.root.after(0, lambda: self.status_eta_var.set("预计完成: --"))
                 
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -4604,6 +5214,19 @@ print(json.dumps(res, ensure_ascii=False))"""
                     return
 
                 self.root.after(0, lambda: self.log_message(f"✓ 使用Python: {python_cmd}"))
+                self.root.after(0, lambda: self.log_message("执行训练前环境门禁检查（只检查，不安装）..."))
+                gate_result = self._run_env_check_with_spec(ssh, python_cmd, log=False)
+                if gate_result["missing"]:
+                    missing_text = ", ".join([f"{x['name']}({x['reason']})" for x in gate_result["missing"][:6]])
+                    self.root.after(0, lambda m=missing_text: self.log_message(f"✗ 训练前环境门禁未通过: {m}"))
+                    self.root.after(0, lambda: self.log_message("训练阶段已禁止自动拉包，请先点击【修复环境】"))
+                    self.root.after(0, lambda: self.training_status_var.set("训练失败: 环境门禁未通过"))
+                    return
+                if self.env_check_fingerprint and gate_result["fingerprint"] != self.env_check_fingerprint:
+                    self.root.after(0, lambda: self.log_message("⚠ 检测到环境已变化，已按最新环境结果继续训练"))
+                self.env_check_fingerprint = gate_result["fingerprint"]
+                self.env_last_check_time = time.time()
+                self.root.after(0, lambda: self.log_message("✓ 训练前环境门禁通过"))
 
                 # 预下载模型
                 self.root.after(0, lambda: self.log_message("🔄 开始预下载YOLO模型..."))
@@ -4800,7 +5423,7 @@ else:
                 gpu_list = stdout.read().decode('utf-8').strip()
                 has_gpu = bool(gpu_list)
                 if has_gpu:
-                    # 检测PyTorch CUDA状态
+                    # 仅做诊断，不做安装；训练阶段禁止任何自动修复
                     cuda_check_cmd = f'{python_cmd} -c "import torch; print(f\\"cuda_available={{torch.cuda.is_available()}}\\"); print(f\\"cuda_version={{torch.version.cuda}}\\"); print(f\\"torch_version={{torch.__version__}}\\")"'
                     stdin, stdout, stderr = ssh.exec_command(f'cd /root && {cuda_check_cmd}')
                     cuda_check_output = stdout.read().decode('utf-8').strip()
@@ -4826,59 +5449,7 @@ else:
                             torch_version = line.split('=', 1)[1]
 
                     self.root.after(0, lambda: self.log_message(f"PyTorch CUDA状态: available={cuda_available}, version={cuda_version}, torch={torch_version}"))
-
-                    # 判断是否需要安装CUDA版PyTorch
-                    need_cuda = not cuda_available and not cuda_version
-                    has_cuda_build = torch_version and '+cu' in torch_version
-
-                    if has_cuda_build:
-                        self.root.after(0, lambda: self.log_message(f'✓ 检测到CUDA版PyTorch ({torch_version})，无需重复安装'))
-                        need_cuda = False
-                    if need_cuda:
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major)+\".\"+str(sys.version_info.minor))"')
-                        pyver = stdout.read().decode('utf-8').strip()
-                        cuda_index = 'https://download.pytorch.org/whl/cu121'
-                        install_cuda = (
-                            f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.1.0" "torchvision==0.16.0" "torchaudio==2.1.0" --index-url {cuda_index}'
-                            if pyver in ['3.8','3.9'] else
-                            f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" --index-url {cuda_index}'
-                        )
-                        self.root.after(0, lambda: self.log_message('安装CUDA版PyTorch...'))
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {install_cuda}')
-                        stdout.channel.recv_exit_status()
-                        self.root.after(0, lambda: self.log_message('CUDA版PyTorch安装完成，验证...'))
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import torch, json; print(json.dumps({{\"compiled\": (torch.version.cuda is not None), \"available\": bool(torch.cuda.is_available()), \"ver\": str(torch.version.cuda)}}))"')
-                        verify_cuda = stdout.read().decode('utf-8').strip()
-                        self.root.after(0, lambda v=verify_cuda: self.log_message(f'PyTorch CUDA验证: {v}'))
-                    else:
-                        self.root.after(0, lambda: self.log_message('✓ 检测到CUDA版PyTorch，无需重复安装'))
-                
-                # 不再改动系统site-packages目录，避免造成解释器环境不一致
-                self.root.after(0, lambda: self.log_message("保持系统site-packages不变，统一使用当前Python解释器和其pip"))
-                
-                try:
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy; print(numpy.__version__)"')
-                    numpy_ver = stdout.read().decode('utf-8').strip()
-                    need_fix_numpy = bool(numpy_ver) and numpy_ver.startswith('2')
-                except Exception:
-                    need_fix_numpy = True
-                if need_fix_numpy:
-                    for c in [
-                        f'{python_cmd} -m pip uninstall -y numpy || true',
-                        f'{python_cmd} -m pip install --force-reinstall --no-cache-dir "numpy==1.26.4"'
-                    ]:
-                        ssh.exec_command(f'cd /root && {c}')[1].channel.recv_exit_status()
-                try:
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import cv2; print(cv2.__version__)"')
-                    cv2_ver_out = stdout.read().decode('utf-8').strip()
-                    cv2_err = stderr.read().decode('utf-8').strip()
-                    if (not cv2_ver_out) or ('_ARRAY_API' in cv2_err):
-                        ssh.exec_command(f'cd /root && {python_cmd} -m pip install --force-reinstall --no-cache-dir "opencv-python==4.7.0.72"')[1].channel.recv_exit_status()
-                except Exception:
-                    ssh.exec_command(f'cd /root && {python_cmd} -m pip install --force-reinstall --no-cache-dir "opencv-python==4.7.0.72"')[1].channel.recv_exit_status()
-                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import numpy, cv2; print(numpy.__version__); print(cv2.__version__)"')
-                final_ver = stdout.read().decode('utf-8').strip()
-                self.root.after(0, lambda v=final_ver: self.log_message(f"✓ 运行环境确认: {v}"))
+                self.root.after(0, lambda: self.log_message("✓ 训练阶段仅诊断，不执行任何安装/重装；环境检查与门禁已统一复用"))
                 
                 # 执行训练命令，使用精确的环境控制，确保用户本地包可访问
                 # 1. 设置PYTHONNOUSERSITE=0确保用户包可用
@@ -4887,12 +5458,16 @@ else:
                 # 4. 移除-I标志，因为它会禁用用户站点包目录
                 stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major)+\\".\\"+str(sys.version_info.minor))"')
                 py_mm = stdout.read().decode('utf-8').strip() or '3.10'
+                py_bin_dir = os.path.dirname(str(python_cmd).replace('\\', '/'))
                 env_setup = [
                     'export PYTHONNOUSERSITE=0',
                     'export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1',
+                    'export YOLO_AUTOINSTALL=0',
+                    'export ULTRALYTICS_AUTOINSTALL=0',
                     'export MPLBACKEND=Agg',
                     'export CUDA_VISIBLE_DEVICES=0',
                     'export PYTHONDONTWRITEBYTECODE=1',
+                    f'export PATH={py_bin_dir}:$PATH',
                     'unset PYTHONSTARTUP',
                     f'export PYTHONPATH=/root/miniforge3/lib/python{py_mm}/site-packages:/root/.local/lib/python{py_mm}/site-packages:$PYTHONPATH'
                 ]
@@ -4931,6 +5506,8 @@ else:
                 total_steps = None
                 current_epoch = None
                 current_step = None
+                saw_success_marker = False
+                saw_failed_marker = False
                 
                 while True:
                     # 读取日志文件的新内容
@@ -4943,6 +5520,10 @@ else:
                             if line.strip():
                                 self.root.after(0, lambda l=line: self.log_message(f"[训练] {l.strip()}"))
                                 clean_line = ansi.sub('', line)
+                                if 'FINAL_STATUS: SUCCESS' in clean_line:
+                                    saw_success_marker = True
+                                if 'FINAL_STATUS: FAILED' in clean_line:
+                                    saw_failed_marker = True
                                 # 解析总epoch
                                 m_total = re.search(r'Starting training for\s+(\d+)\s+epochs', clean_line)
                                 if m_total:
@@ -4997,6 +5578,10 @@ else:
                     for line in final_log.split('\n'):
                         if line.strip():
                             self.root.after(0, lambda l=line: self.log_message(f"[最终] {l.strip()}"))
+                    if 'FINAL_STATUS: SUCCESS' in final_log:
+                        saw_success_marker = True
+                    if 'FINAL_STATUS: FAILED' in final_log:
+                        saw_failed_marker = True
                 
                 # 检查是否有错误日志文件
                 stdin, stdout, stderr = ssh.exec_command(f'ls -la /root/training_error_*.json 2>/dev/null || echo "无错误文件"')
@@ -5014,18 +5599,30 @@ else:
                     pass  # 忽略恢复错误
                 
                 ssh.close()
-                
-                self.root.after(0, lambda: self.training_status_var.set("✅ 训练完成"))
+
+                if saw_success_marker and not saw_failed_marker:
+                    self.root.after(0, lambda: self.training_status_var.set("✅ 训练+导出完成"))
+                else:
+                    self.root.after(0, lambda: self.training_status_var.set("❌ 训练或导出失败"))
+                self._last_eta_epoch = None
+                self._last_eta_total = None
+                if hasattr(self, "status_eta_var"):
+                    self.root.after(0, lambda: self.status_eta_var.set("预计完成: --"))
                 self.is_training = False
                 self.root.after(0, self.update_training_button_state)
-                
-                # 训练完成提示（通知+声音+闪烁+弹窗）
-                self.root.after(0, self._notify_training_complete)
+
+                # 仅在训练+导出均完成时通知
+                if saw_success_marker and not saw_failed_marker:
+                    self.root.after(0, self._notify_training_complete)
                 
             except Exception as e:
                 error_msg = str(e)
                 self.root.after(0, lambda msg=error_msg: self.training_status_var.set(f"训练失败: {msg}"))
                 self.root.after(0, lambda msg=error_msg: self.log_message(f"训练失败: {msg}"))
+                self._last_eta_epoch = None
+                self._last_eta_total = None
+                if hasattr(self, "status_eta_var"):
+                    self.root.after(0, lambda: self.status_eta_var.set("预计完成: --"))
                 self.is_training = False
                 self.root.after(0, self.update_training_button_state)
         
@@ -5141,6 +5738,10 @@ else:
                     self.root.after(0, self.stop_system_monitoring)
                     
                     self.root.after(0, lambda: self.training_status_var.set("已停止"))
+                    self._last_eta_epoch = None
+                    self._last_eta_total = None
+                    if hasattr(self, "status_eta_var"):
+                        self.root.after(0, lambda: self.status_eta_var.set("预计完成: --"))
                     self.root.after(0, lambda: self.log_message("训练已停止"))
                     
                 except Exception as e:
@@ -5576,7 +6177,13 @@ else:
         try:
             sftp = ssh.open_sftp()
             # 搜索多个可能的路径，包括 /root/runs/train 和 /root/runs/detect/runs/train
-            cmd = 'find /root/runs -type f \\( -name "best.pt" -o -name "best_*.pt" \\) -printf "%T@|%s|%p\\n" 2>/dev/null | sort -t"|" -k1,1nr'
+            cmd = (
+                'find /root/runs -type f \\( '
+                '-name "best.pt" -o -name "best_*.pt" -o '
+                '-name "best.onnx" -o -name "best_*.onnx" -o '
+                '-name "best*.tflite" -o -name "*_*.zip" '
+                '\\) -printf "%T@|%s|%p\\n" 2>/dev/null | sort -t"|" -k1,1nr'
+            )
             stdin, stdout, stderr = ssh.exec_command(cmd)
             output = stdout.read().decode('utf-8', errors='ignore').strip()
             if not output:
@@ -5657,11 +6264,11 @@ else:
         query_window.destroy()
         
         if not model_info:
-            messagebox.showinfo("信息", "服务器上未找到可下载的best模型")
+            messagebox.showinfo("信息", "服务器上未找到可下载的模型文件（pt/onnx/tflite/zip）")
             return
         
         selection_window = tk.Toplevel(self.root)
-        selection_window.title("选择要下载的best模型")
+        selection_window.title("选择要下载的模型文件")
         selection_window.geometry("1220x620")
         selection_window.transient(self.root)
         selection_window.grab_set()
@@ -5674,15 +6281,15 @@ else:
         title_frame = ttk.Frame(selection_window)
         title_frame.pack(fill='x', padx=20, pady=10)
         
-        ttk.Label(title_frame, text="选择要下载的best模型", font=("Arial", 14, "bold")).pack()
-        ttk.Label(title_frame, text="💾 仅支持单文件下载，可在保存时自定义名称", 
+        ttk.Label(title_frame, text="选择要下载的模型文件", font=("Arial", 14, "bold")).pack()
+        ttk.Label(title_frame, text="💾 支持 .pt / .onnx / .tflite / .zip 多选批量下载（下载到同一目录，自动命名）", 
                  font=("Arial", 10), foreground="blue").pack(pady=5)
         
         list_frame = ttk.Frame(selection_window)
         list_frame.pack(fill='both', expand=True, padx=20, pady=10)
         
         columns = ('run_dir', 'imgsz', 'base_model', 'epochs', 'batch', 'lr0', 'patience', 'optimizer', 'date', 'size')
-        model_tree = ttk.Treeview(list_frame, columns=columns, show='tree headings', selectmode='browse')
+        model_tree = ttk.Treeview(list_frame, columns=columns, show='tree headings', selectmode='extended')
         model_tree.heading('#0', text='模型文件')
         model_tree.heading('run_dir', text='运行目录')
         model_tree.heading('imgsz', text='分辨率')
@@ -5735,41 +6342,47 @@ else:
         
         control_frame = ttk.Frame(selection_window)
         control_frame.pack(fill='x', padx=20, pady=10)
+        left_btn_frame = ttk.Frame(control_frame)
+        left_btn_frame.pack(side='left')
         button_frame = ttk.Frame(control_frame)
         button_frame.pack(side='right')
+
+        def select_all():
+            ids = model_tree.get_children('')
+            if ids:
+                model_tree.selection_set(ids)
+
+        def clear_selection():
+            model_tree.selection_remove(model_tree.selection())
+
+        ttk.Button(left_btn_frame, text="全选", command=select_all).pack(side='left', padx=5)
+        ttk.Button(left_btn_frame, text="清空选择", command=clear_selection).pack(side='left', padx=5)
         
         def start_download():
             selected_items = model_tree.selection()
             if not selected_items:
-                messagebox.showwarning("警告", "请选择一个模型文件")
+                messagebox.showwarning("警告", "请至少选择一个模型文件")
                 return
-            selected_model = model_map.get(selected_items[0])
-            if not selected_model:
+            selected_models = []
+            for item_id in selected_items:
+                m = model_map.get(item_id)
+                if m:
+                    selected_models.append(m)
+            if not selected_models:
                 return
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            default_filename = self._build_download_model_filename(
-                selected_model.get('name', 'best.pt'),
-                selected_model.get('image_size', '-'),
-                selected_model.get('model_scale', '-'),
-                timestamp,
-                selected_model.get('run_dir', '')
-            )
             initial_dir = self.dataset_config.get('local_path') or os.getcwd()
             if not os.path.isdir(initial_dir):
                 initial_dir = os.getcwd()
-            save_path = filedialog.asksaveasfilename(
-                title="选择模型保存位置",
-                defaultextension=".pt",
-                filetypes=[("PyTorch模型", "*.pt"), ("所有文件", "*.*")],
-                initialdir=initial_dir,
-                initialfile=default_filename
+            output_dir = filedialog.askdirectory(
+                title="选择模型保存目录（批量下载）",
+                initialdir=initial_dir
             )
-            if not save_path:
+            if not output_dir:
                 return
             selection_window.destroy()
-            self.download_single_model(selected_model, save_path)
+            self.download_models_batch(selected_models, output_dir)
         
-        ttk.Button(button_frame, text="下载模型", command=start_download).pack(side='right', padx=5)
+        ttk.Button(button_frame, text="下载所选模型", command=start_download).pack(side='right', padx=5)
         ttk.Button(button_frame, text="取消", command=selection_window.destroy).pack(side='right', padx=5)
     
     def _format_bytes_text(self, size_bytes):
@@ -5786,6 +6399,10 @@ else:
         stem, ext = os.path.splitext(base)
         if not ext:
             ext = ".pt"
+        # ZIP 为训练完整包，优先保留远端原始命名（例如 命名_时间戳.zip）
+        if ext.lower() == ".zip":
+            safe_zip = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in base) or f"model_{timestamp}.zip"
+            return safe_zip
         safe_stem = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in stem) or "best"
         safe_run = "".join(ch if str(ch).isalnum() or ch in ("-", "_") else "_" for ch in str(run_dir or "run")) or "run"
         safe_img = "".join(ch if str(ch).isalnum() or ch in ("-", "_") else "_" for ch in str(image_size if image_size not in (None, "") else "-")) or "-"
@@ -5898,6 +6515,149 @@ else:
                         pass
 
         threading.Thread(target=download_thread, daemon=True).start()
+
+    def _ensure_unique_local_file(self, local_file):
+        if not os.path.exists(local_file):
+            return local_file
+        base, ext = os.path.splitext(local_file)
+        idx = 1
+        while True:
+            candidate = f"{base}_{idx}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            idx += 1
+
+    def download_models_batch(self, selected_models, output_dir):
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("批量下载模型")
+        progress_window.geometry("700x300")
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+        progress_window.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+
+        total_count = len(selected_models)
+        tk.Label(progress_window, text=f"准备批量下载 {total_count} 个模型文件", font=("Arial", 10)).pack(pady=10)
+
+        overall_var = tk.DoubleVar()
+        ttk.Label(progress_window, text="总体进度").pack()
+        overall_bar = ttk.Progressbar(progress_window, variable=overall_var, maximum=100, length=640)
+        overall_bar.pack(pady=5)
+
+        current_var = tk.DoubleVar()
+        ttk.Label(progress_window, text="当前文件进度").pack()
+        current_bar = ttk.Progressbar(progress_window, variable=current_var, maximum=100, length=640)
+        current_bar.pack(pady=5)
+
+        status_label = tk.Label(progress_window, text="准备连接服务器...", font=("Arial", 9))
+        status_label.pack(pady=8)
+        result_label = tk.Label(progress_window, text="0/0", font=("Arial", 9))
+        result_label.pack(pady=2)
+
+        cancel_flag = {'cancelled': False}
+
+        def cancel_download():
+            cancel_flag['cancelled'] = True
+            status_label.config(text="正在取消...")
+
+        ttk.Button(progress_window, text="取消", command=cancel_download).pack(pady=6)
+
+        def batch_thread():
+            ssh = None
+            sftp = None
+            ok_count = 0
+            fail_count = 0
+            try:
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                connect_params = {
+                    'hostname': self.server_config['hostname'],
+                    'port': self.server_config['port'],
+                    'username': self.server_config['username']
+                }
+                if self.server_config['key_file']:
+                    connect_params['key_filename'] = self.server_config['key_file']
+                else:
+                    connect_params['password'] = self.server_config['password']
+                ssh.connect(**connect_params)
+                sftp = ssh.open_sftp()
+
+                for idx, model in enumerate(selected_models, start=1):
+                    if cancel_flag['cancelled']:
+                        break
+                    remote_path = model.get('path', '')
+                    if not remote_path:
+                        fail_count += 1
+                        continue
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    default_filename = self._build_download_model_filename(
+                        model.get('name', 'best.pt'),
+                        model.get('image_size', '-'),
+                        model.get('model_scale', '-'),
+                        timestamp,
+                        model.get('run_dir', '')
+                    )
+                    local_file = self._ensure_unique_local_file(os.path.join(output_dir, default_filename))
+                    model_name = model.get('name') or os.path.basename(remote_path) or 'best.pt'
+                    self.root.after(0, lambda i=idx, t=total_count, n=model_name: status_label.config(text=f"下载中 [{i}/{t}] {n}"))
+                    self.root.after(0, lambda i=idx, t=total_count: overall_var.set(((i - 1) * 100.0) / max(1, t)))
+                    self.root.after(0, lambda: current_var.set(0.0))
+
+                    file_size = 0
+                    try:
+                        file_size = int(sftp.stat(remote_path).st_size)
+                    except Exception:
+                        file_size = 0
+
+                    last_ui_time = 0.0
+
+                    def progress_cb(transferred, total):
+                        nonlocal last_ui_time
+                        if cancel_flag['cancelled']:
+                            raise RuntimeError("用户取消下载")
+                        now_ts = time.time()
+                        if now_ts - last_ui_time < 0.2 and transferred < total:
+                            return
+                        last_ui_time = now_ts
+                        denom = max(file_size, total, 1)
+                        pct = min(100.0, (max(0, transferred) * 100.0 / denom))
+                        self.root.after(0, lambda p=pct: current_var.set(p))
+
+                    try:
+                        sftp.get(remote_path, local_file, callback=progress_cb)
+                        ok_count += 1
+                        self.root.after(0, lambda f=os.path.basename(local_file): self.log_message(f"模型下载完成: {f}"))
+                        self.root.after(0, lambda p=local_file: self.log_message(f"保存路径: {p}"))
+                    except Exception as e:
+                        fail_count += 1
+                        self.root.after(0, lambda n=model_name, err=str(e): self.log_message(f"下载失败: {n} -> {err}"))
+
+                    self.root.after(0, lambda i=idx, t=total_count, o=ok_count, f=fail_count: result_label.config(text=f"{i}/{t}  成功{o}  失败{f}"))
+                    self.root.after(0, lambda i=idx, t=total_count: overall_var.set((i * 100.0) / max(1, t)))
+
+                if cancel_flag['cancelled']:
+                    self.root.after(0, lambda: status_label.config(text="已取消批量下载"))
+                else:
+                    self.root.after(0, lambda: status_label.config(text="批量下载完成"))
+                self.root.after(0, lambda o=ok_count, f=fail_count: messagebox.showinfo("下载完成", f"批量下载完成\n成功: {o}\n失败: {f}\n目录: {output_dir}"))
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): messagebox.showerror("错误", f"批量下载失败: {err}"))
+            finally:
+                if sftp:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
+                if ssh:
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+                self.root.after(0, lambda: current_var.set(0 if cancel_flag['cancelled'] else current_var.get()))
+
+        threading.Thread(target=batch_thread, daemon=True).start()
     
     def handle_model_query_error(self, error_msg, query_window):
         """处理模型查询错误"""
@@ -5974,8 +6734,10 @@ else:
         # 大屏标题栏状态显示
         fullscreen_header_status = tk.StringVar(value="未开始")
         fullscreen_header_duration = tk.StringVar(value="时长: 00:00:00")
+        fullscreen_header_eta = tk.StringVar(value="预计完成: --")
         ttk.Label(toolbar, textvariable=fullscreen_header_status, font=("Arial", 11, "bold"), foreground="#007bff").pack(side='left', padx=10)
         ttk.Label(toolbar, textvariable=fullscreen_header_duration, font=("Arial", 11)).pack(side='left', padx=5)
+        ttk.Label(toolbar, textvariable=fullscreen_header_eta, font=("Arial", 11)).pack(side='left', padx=5)
 
         # 三图容器
         charts_frame = ttk.Frame(monitor_window)
@@ -6037,10 +6799,12 @@ else:
 
         fullscreen_status_var = tk.StringVar(value="状态: 未开始")
         fullscreen_duration_var = tk.StringVar(value="时长: 00:00:00")
+        fullscreen_eta_var = tk.StringVar(value="预计完成: --")
         fullscreen_loss_var = tk.StringVar(value="当前Loss: -")
 
         ttk.Label(status_bar, textvariable=fullscreen_status_var, font=("Arial", 10)).pack(side='left', padx=10)
         ttk.Label(status_bar, textvariable=fullscreen_duration_var, font=("Arial", 10)).pack(side='left', padx=10)
+        ttk.Label(status_bar, textvariable=fullscreen_eta_var, font=("Arial", 10)).pack(side='left', padx=10)
         ttk.Label(status_bar, textvariable=fullscreen_loss_var, font=("Arial", 10)).pack(side='left', padx=10)
 
         # 存储大屏图表引用
@@ -6052,9 +6816,11 @@ else:
         self.fullscreen_status_vars = {
             'status': fullscreen_status_var,
             'duration': fullscreen_duration_var,
+            'eta': fullscreen_eta_var,
             'loss': fullscreen_loss_var,
             'header_status': fullscreen_header_status,
-            'header_duration': fullscreen_header_duration
+            'header_duration': fullscreen_header_duration,
+            'header_eta': fullscreen_header_eta
         }
 
         # 启动大屏更新循环
@@ -6105,30 +6871,60 @@ else:
                     ax.grid(True, alpha=0.3)
 
                     x = list(self.loss_epoch_data)
-                    if hasattr(self, 'loss_box_data') and self.loss_box_data:
-                        ax.plot(x, list(self.loss_box_data), color='#ff7f0e', linewidth=2, marker='o', markersize=3, label='box')
-                    if hasattr(self, 'loss_cls_data') and self.loss_cls_data:
-                        ax.plot(x, list(self.loss_cls_data), color='#1f77b4', linewidth=2, marker='o', markersize=3, label='cls')
-                    if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data:
-                        ax.plot(x, list(self.loss_dfl_data), color='#2ca02c', linewidth=2, marker='o', markersize=3, label='dfl')
+                    box_data = list(self.loss_box_data) if hasattr(self, 'loss_box_data') and self.loss_box_data else []
+                    cls_data = list(self.loss_cls_data) if hasattr(self, 'loss_cls_data') and self.loss_cls_data else []
+                    dfl_data = list(self.loss_dfl_data) if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data else []
+
+                    if box_data:
+                        ax.plot(x, box_data, color='#ff7f0e', linewidth=2, marker='o', markersize=3, label='box')
+                    if cls_data:
+                        ax.plot(x, cls_data, color='#1f77b4', linewidth=2, marker='o', markersize=3, label='cls')
+                    if dfl_data:
+                        ax.plot(x, dfl_data, color='#2ca02c', linewidth=2, marker='o', markersize=3, label='dfl')
                     ax.legend(loc='upper left', fontsize=9)
 
                     # 大屏智能末端标注 - 避免重叠
                     end_values = []
-                    if hasattr(self, 'loss_box_data') and self.loss_box_data:
-                        end_values.append({'type': 'box', 'value': self.loss_box_data[-1], 'x': x[-1], 'color': '#ff7f0e'})
-                    if hasattr(self, 'loss_cls_data') and self.loss_cls_data:
-                        end_values.append({'type': 'cls', 'value': self.loss_cls_data[-1], 'x': x[-1], 'color': '#1f77b4'})
-                    if hasattr(self, 'loss_dfl_data') and self.loss_dfl_data:
-                        end_values.append({'type': 'dfl', 'value': self.loss_dfl_data[-1], 'x': x[-1], 'color': '#2ca02c'})
+                    if box_data:
+                        end_values.append({'type': 'box', 'value': box_data[-1], 'x': x[-1], 'color': '#ff7f0e'})
+                    if cls_data:
+                        end_values.append({'type': 'cls', 'value': cls_data[-1], 'x': x[-1], 'color': '#1f77b4'})
+                    if dfl_data:
+                        end_values.append({'type': 'dfl', 'value': dfl_data[-1], 'x': x[-1], 'color': '#2ca02c'})
 
                     # 按值排序，让大的在上面
                     end_values.sort(key=lambda item: item['value'], reverse=True)
 
-                    # 智能偏移 - 大屏用更大的间距
-                    min_offset = 18  # 大屏用更大的间距
+                    # 按像素间距动态避让，避免标签重叠
+                    def _calc_adaptive_offsets(ax_obj, items, base_offset_pt=14.0, min_gap_px=16.0):
+                        offsets = []
+                        placed_y = []
+                        px_per_pt = ax_obj.figure.dpi / 72.0
+                        y_min_px = float(ax_obj.bbox.ymin)
+                        y_max_px = float(ax_obj.bbox.ymax)
+                        edge_margin_px = max(min_gap_px, 10.0)
+                        for it in items:
+                            try:
+                                y_px = float(ax_obj.transData.transform((it['x'], it['value']))[1])
+                            except Exception:
+                                y_px = 0.0
+                            label_y = y_px + base_offset_pt * px_per_pt
+                            if placed_y:
+                                max_allowed = placed_y[-1] - min_gap_px
+                                if label_y > max_allowed:
+                                    label_y = max_allowed
+                            # 边界保护：避免标签超出绘图区被裁切
+                            low = y_min_px + edge_margin_px
+                            high = y_max_px - edge_margin_px
+                            if high >= low:
+                                label_y = min(max(label_y, low), high)
+                            placed_y.append(label_y)
+                            offsets.append((label_y - y_px) / px_per_pt)
+                        return offsets
+
+                    end_offsets = _calc_adaptive_offsets(ax, end_values, base_offset_pt=14.0, min_gap_px=18.0)
                     for i, item in enumerate(end_values):
-                        y_offset = (len(end_values) - 1 - i) * min_offset - (len(end_values) - 1) * min_offset / 2
+                        y_offset = end_offsets[i] if i < len(end_offsets) else 0.0
                         ax.annotate(
                             f"{item['type']} {item['value']:.4f}",
                             xy=(item['x'], item['value']),
@@ -6138,6 +6934,77 @@ else:
                             fontsize=9,
                             fontweight='bold',
                             bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor=item['color'], alpha=0.8)
+                        )
+
+                    # 找到历史最低点（不包括最后一个点）
+                    def find_min_except_last_fullscreen(xs, ys):
+                        """找到历史最低点（不包括最后一个点）"""
+                        n = min(len(xs), len(ys))
+                        if n < 2:
+                            return None, None
+                        min_val = float('inf')
+                        min_idx = -1
+                        for idx in range(n - 1):  # 排除最后一个点
+                            try:
+                                yv = float(ys[idx])
+                                if np.isfinite(yv) and yv < min_val:
+                                    min_val = yv
+                                    min_idx = idx
+                            except Exception:
+                                pass
+                        if min_idx >= 0:
+                            return xs[min_idx], min_val
+                        return None, None
+
+                    # 找到各曲线的历史最低点
+                    min_box_x, min_box_val = find_min_except_last_fullscreen(x, box_data)
+                    min_cls_x, min_cls_val = find_min_except_last_fullscreen(x, cls_data)
+                    min_dfl_x, min_dfl_val = find_min_except_last_fullscreen(x, dfl_data)
+
+                    # 标注历史最低点（灰色虚线框）
+                    min_values = []
+                    if min_box_x is not None and min_box_val is not None:
+                        min_values.append({'type': 'box', 'value': min_box_val, 'x': min_box_x, 'color': '#ff7f0e'})
+                    if min_cls_x is not None and min_cls_val is not None:
+                        min_values.append({'type': 'cls', 'value': min_cls_val, 'x': min_cls_x, 'color': '#1f77b4'})
+                    if min_dfl_x is not None and min_dfl_val is not None:
+                        min_values.append({'type': 'dfl', 'value': min_dfl_val, 'x': min_dfl_x, 'color': '#2ca02c'})
+
+                    # 按值排序
+                    min_values.sort(key=lambda item: item['value'], reverse=True)
+
+                    # 标注历史最低点（高对比 + 动态避让）
+                    min_offsets = _calc_adaptive_offsets(ax, min_values, base_offset_pt=16.0, min_gap_px=20.0)
+                    for i, item in enumerate(min_values):
+                        # 先给最低点打一个醒目标记，避免文字重叠时找不到点
+                        ax.plot(
+                            [item['x']], [item['value']],
+                            marker='o', markersize=5.5,
+                            markerfacecolor='white',
+                            markeredgecolor=item['color'],
+                            markeredgewidth=1.6,
+                            linestyle='None',
+                            zorder=6
+                        )
+                        y_offset = min_offsets[i] if i < len(min_offsets) else 0.0
+                        ax.annotate(
+                            f"min:{item['value']:.4f}",
+                            xy=(item['x'], item['value']),
+                            xytext=(6, y_offset),
+                            textcoords='offset points',
+                            color='#111111',
+                            fontsize=8.5,
+                            ha='left',
+                            va='bottom',
+                            fontweight='bold',
+                            bbox=dict(
+                                boxstyle='round,pad=0.24',
+                                facecolor='white',
+                                edgecolor=item['color'],
+                                linewidth=1.2,
+                                alpha=0.95
+                            ),
+                            zorder=7
                         )
 
                     canvas.draw()
@@ -6153,6 +7020,10 @@ else:
                     self.fullscreen_status_vars['duration'].set(duration_text)
                     # 同步到标题栏
                     self.fullscreen_status_vars['header_duration'].set(duration_text)
+                if hasattr(self, 'status_eta_var'):
+                    eta_text = self.status_eta_var.get()
+                    self.fullscreen_status_vars['eta'].set(eta_text)
+                    self.fullscreen_status_vars['header_eta'].set(eta_text)
                 # 计算当前总loss
                 total_loss = 0
                 loss_count = 0
@@ -6454,6 +7325,25 @@ else:
                             pass
                     return None, None
 
+                def find_min_except_last(xs, ys):
+                    """找到历史最低点（不包括最后一个点）"""
+                    n = min(len(xs), len(ys))
+                    if n < 2:
+                        return None, None
+                    min_val = float('inf')
+                    min_idx = -1
+                    for idx in range(n - 1):  # 排除最后一个点
+                        try:
+                            yv = float(ys[idx])
+                            if np.isfinite(yv) and yv < min_val:
+                                min_val = yv
+                                min_idx = idx
+                        except Exception:
+                            pass
+                    if min_idx >= 0:
+                        return xs[min_idx], min_val
+                    return None, None
+
                 latest_epoch = None
                 try:
                     latest_epoch = int(float(x[-1])) if x else None
@@ -6463,6 +7353,11 @@ else:
                 x_box, v_box = latest_valid_point(x, box_y)
                 x_cls, v_cls = latest_valid_point(x, cls_y)
                 x_dfl, v_dfl = latest_valid_point(x, dfl_y)
+
+                # 找到历史最低点（不包括最后一个点）
+                min_box_x, min_box_val = find_min_except_last(x, box_y)
+                min_cls_x, min_cls_val = find_min_except_last(x, cls_y)
+                min_dfl_x, min_dfl_val = find_min_except_last(x, dfl_y)
 
                 # 智能标注 - 收集所有有效值并排序
                 end_values = []
@@ -6476,11 +7371,36 @@ else:
                 # 按值排序，让大的在上面
                 end_values.sort(key=lambda item: item['value'], reverse=True)
 
-                # 智能偏移 - 根据位置计算偏移量避免重叠
-                min_offset = 12  # 最小像素间距
+                # 按像素间距动态避让，避免标签重叠
+                def _calc_adaptive_offsets(ax_obj, items, base_offset_pt=9.0, min_gap_px=12.0):
+                    offsets = []
+                    placed_y = []
+                    px_per_pt = ax_obj.figure.dpi / 72.0
+                    y_min_px = float(ax_obj.bbox.ymin)
+                    y_max_px = float(ax_obj.bbox.ymax)
+                    edge_margin_px = max(min_gap_px, 8.0)
+                    for it in items:
+                        try:
+                            y_px = float(ax_obj.transData.transform((it['x'], it['value']))[1])
+                        except Exception:
+                            y_px = 0.0
+                        label_y = y_px + base_offset_pt * px_per_pt
+                        if placed_y:
+                            max_allowed = placed_y[-1] - min_gap_px
+                            if label_y > max_allowed:
+                                label_y = max_allowed
+                        # 边界保护：避免标签超出绘图区被裁切
+                        low = y_min_px + edge_margin_px
+                        high = y_max_px - edge_margin_px
+                        if high >= low:
+                            label_y = min(max(label_y, low), high)
+                        placed_y.append(label_y)
+                        offsets.append((label_y - y_px) / px_per_pt)
+                    return offsets
+
+                end_offsets = _calc_adaptive_offsets(ax_loss, end_values, base_offset_pt=9.0, min_gap_px=14.0)
                 for i, item in enumerate(end_values):
-                    # 根据排序后的索引计算垂直偏移
-                    y_offset = (len(end_values) - 1 - i) * min_offset - (len(end_values) - 1) * min_offset / 2
+                    y_offset = end_offsets[i] if i < len(end_offsets) else 0.0
                     ax_loss.annotate(
                         f"{item['type']} {item['value']:.4f}",
                         xy=(item['x'], item['value']),
@@ -6490,6 +7410,51 @@ else:
                         fontsize=7,
                         fontweight='bold',
                         bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor=item['color'], alpha=0.7)
+                    )
+
+                # 标注历史最低点（灰色虚线框）
+                min_values = []
+                if min_box_x is not None and min_box_val is not None:
+                    min_values.append({'type': 'box', 'value': min_box_val, 'x': min_box_x, 'color': '#ff7f0e'})
+                if min_cls_x is not None and min_cls_val is not None:
+                    min_values.append({'type': 'cls', 'value': min_cls_val, 'x': min_cls_x, 'color': '#1f77b4'})
+                if min_dfl_x is not None and min_dfl_val is not None:
+                    min_values.append({'type': 'dfl', 'value': min_dfl_val, 'x': min_dfl_x, 'color': '#2ca02c'})
+
+                # 按值排序
+                min_values.sort(key=lambda item: item['value'], reverse=True)
+
+                # 标注历史最低点（高对比 + 动态避让）
+                min_offsets = _calc_adaptive_offsets(ax_loss, min_values, base_offset_pt=11.0, min_gap_px=16.0)
+                for i, item in enumerate(min_values):
+                    ax_loss.plot(
+                        [item['x']], [item['value']],
+                        marker='o', markersize=4.2,
+                        markerfacecolor='white',
+                        markeredgecolor=item['color'],
+                        markeredgewidth=1.2,
+                        linestyle='None',
+                        zorder=6
+                    )
+                    y_offset = min_offsets[i] if i < len(min_offsets) else 0.0
+                    ax_loss.annotate(
+                        f"min:{item['value']:.4f}",
+                        xy=(item['x'], item['value']),
+                        xytext=(5, y_offset),
+                        textcoords='offset points',
+                        color='#111111',
+                        fontsize=7,
+                        ha='left',
+                        va='bottom',
+                        fontweight='bold',
+                        bbox=dict(
+                            boxstyle='round,pad=0.18',
+                            facecolor='white',
+                            edgecolor=item['color'],
+                            linewidth=1.0,
+                            alpha=0.95
+                        ),
+                        zorder=7
                     )
 
                 total_vals = [v for v in [v_box, v_cls, v_dfl] if v is not None and np.isfinite(v)]
@@ -6529,6 +7494,24 @@ else:
         self.loss_cls_data.clear()
         self.loss_dfl_data.clear()
         self.last_loss_epoch = -1
+
+    def _calc_eta_text(self, current_epoch, total_epochs):
+        """根据当前轮次估算完成时间（ETA）"""
+        try:
+            if not hasattr(self, "training_start_time") or not self.training_start_time:
+                return "预计完成: --"
+            if not current_epoch or not total_epochs or total_epochs <= 0:
+                return "预计完成: --"
+            progress = float(current_epoch) / float(total_epochs)
+            if progress <= 0:
+                return "预计完成: --"
+            elapsed = max(0.0, time.time() - float(self.training_start_time))
+            remain = max(0.0, elapsed * (1.0 / progress - 1.0))
+            eta_ts = time.time() + remain
+            eta_text = datetime.fromtimestamp(eta_ts).strftime("%H:%M:%S")
+            return f"预计完成: {eta_text}"
+        except Exception:
+            return "预计完成: --"
 
     def _update_training_progress(self):
         try:
@@ -6626,15 +7609,61 @@ else:
                     epoch_text = f"Epoch: {current_epoch}/?"
             if status_text:
                 self.root.after(0, lambda s=status_text: self.training_status_var.set(s))
-            if epoch_text:
-                # 更新时长
-                if hasattr(self, "status_duration_var") and hasattr(self, "training_start_time") and self.training_start_time:
-                    duration = time.time() - self.training_start_time
-                    m, s = divmod(int(duration), 60)
-                    h, m = divmod(m, 60)
-                    duration_text = f"时长: {h:02d}:{m:02d}:{s:02d}"
-                    self.root.after(0, lambda s=duration_text: self.status_duration_var.set(s))
+            # 更新时长（不再依赖 epoch_text，避免解析短暂失败导致时长卡住）
+            if hasattr(self, "status_duration_var") and hasattr(self, "training_start_time") and self.training_start_time and self.is_training:
+                duration = time.time() - self.training_start_time
+                m, s = divmod(int(duration), 60)
+                h, m = divmod(m, 60)
+                duration_text = f"时长: {h:02d}:{m:02d}:{s:02d}"
+                self.root.after(0, lambda s=duration_text: self.status_duration_var.set(s))
+            # 更新预计完成时间
+            if hasattr(self, "status_eta_var"):
+                if total_epochs is None:
+                    try:
+                        cfg_epochs = int(self.training_config.get('epochs'))
+                        if cfg_epochs > 0:
+                            total_epochs = cfg_epochs
+                    except Exception:
+                        pass
+                # 兜底：若本轮未从日志解析到epoch，尝试从状态文本反解析（如“训练中: 19/300”）
+                status_candidates = []
+                if status_text:
+                    status_candidates.append(str(status_text))
+                if hasattr(self, "training_status_var"):
+                    try:
+                        status_candidates.append(str(self.training_status_var.get()))
+                    except Exception:
+                        pass
+                for status_now in status_candidates:
+                    if current_epoch is not None and total_epochs is not None:
+                        break
+                    m_ct = re.search(r'(\d+)\s*/\s*(\d+)', status_now)
+                    if not m_ct:
+                        continue
+                    try:
+                        parsed_cur = int(m_ct.group(1))
+                        parsed_total = int(m_ct.group(2))
+                        if parsed_cur > 0 and parsed_total > 0:
+                            if current_epoch is None:
+                                current_epoch = parsed_cur
+                            if total_epochs is None:
+                                total_epochs = parsed_total
+                    except Exception:
+                        continue
+                # 缓存最近一次有效轮次，避免单次解析失败导致 ETA 回退为 --
+                if current_epoch is not None and total_epochs is not None and current_epoch > 0 and total_epochs > 0:
+                    self._last_eta_epoch = int(current_epoch)
+                    self._last_eta_total = int(total_epochs)
+                else:
+                    cached_epoch = getattr(self, "_last_eta_epoch", None)
+                    cached_total = getattr(self, "_last_eta_total", None)
+                    if cached_epoch is not None and cached_total is not None and cached_epoch > 0 and cached_total > 0:
+                        current_epoch = cached_epoch
+                        total_epochs = cached_total
+                eta_text = self._calc_eta_text(current_epoch, total_epochs)
+                self.root.after(0, lambda s=eta_text: self.status_eta_var.set(s))
 
+            if epoch_text:
                 if hasattr(self, "current_epoch_var"):
                     self.root.after(0, lambda s=epoch_text: self.current_epoch_var.set(s))
         except:
