@@ -1,0 +1,10 @@
+{
+  "whoami": "ubuntu",
+  "runtime_probe": "VERSION_ID=\"22.04\"",
+  "can_list_root": "drwx------ 6 root root 4096 Apr 22 18:50 /root",
+  "can_write_root": "touch: cannot touch '/root/__ctg_write_test': Permission denied\nEXIT:1",
+  "dataset_dir_access": "mkdir: cannot create directory ‘/root’: Permission denied\nEXIT:1",
+  "runs_dir_query": "find: ‘/root/runs’: Permission denied\nEXIT:0",
+  "tmp_access": "OK",
+  "home_access": "/home/ubuntu\n/home/ubuntu\nHOME_OK"
+}

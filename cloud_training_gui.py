@@ -15,6 +15,7 @@ import sys
 import threading
 import subprocess
 import re
+import shlex
 import paramiko
 from pathlib import Path
 from datetime import datetime
@@ -164,7 +165,7 @@ class CloudTrainingGUI:
             }
         }
         self.load_config()
-        self._apply_runtime_mode_defaults(force_username=False)
+        self._apply_runtime_mode_defaults(force_username=False, persist=False)
         
         # 设置UI
         self.setup_ui()
@@ -184,15 +185,54 @@ class CloudTrainingGUI:
         mode = self._normalize_runtime_mode(runtime_mode or self.server_config.get("runtime_mode"))
         return self.runtime_profiles.get(mode, self.runtime_profiles[self.default_runtime_mode])
 
-    def _apply_runtime_mode_defaults(self, force_username=False):
+    def _apply_runtime_mode_defaults(self, force_username=False, persist=False):
         mode = self._normalize_runtime_mode(self.server_config.get("runtime_mode"))
         profile = self._get_runtime_profile(mode)
+        changed = False
         default_username = profile["default_username"]
         current_username = (self.server_config.get("username") or "").strip()
         if force_username or not current_username:
             self.server_config["username"] = default_username
+            changed = True
             if hasattr(self, "username_var"):
                 self.username_var.set(default_username)
+        recommended_dataset_path = self._default_remote_dataset_path(mode=mode)
+        current_remote_path = str(self.dataset_config.get("remote_path") or "").strip()
+        if not current_remote_path or current_remote_path in {"/root/yolo_dataset", "/home/ubuntu/yolo_dataset"}:
+            self.dataset_config["remote_path"] = recommended_dataset_path
+            changed = True
+            if hasattr(self, "remote_path_var"):
+                self.remote_path_var.set(recommended_dataset_path)
+        deploy_cfg = self.config.get("deploy_docker", self.deploy_docker_config)
+        recommended_workspace_dir = self._default_workspace_dir(mode=mode)
+        current_workspace_dir = str(deploy_cfg.get("host_workspace_dir") or "").strip()
+        if not current_workspace_dir or current_workspace_dir in {"/root/cloud_training_workspace", "/home/ubuntu/cloud_training_workspace"}:
+            deploy_cfg["host_workspace_dir"] = recommended_workspace_dir
+            self.deploy_docker_config["host_workspace_dir"] = recommended_workspace_dir
+            changed = True
+        if persist and changed:
+            self.save_config({
+                "server": {"username": self.server_config.get("username"), "runtime_mode": mode},
+                "dataset": {"remote_path": self.dataset_config.get("remote_path", recommended_dataset_path)},
+                "deploy_docker": {"host_workspace_dir": deploy_cfg.get("host_workspace_dir", recommended_workspace_dir)},
+            })
+
+    def _default_remote_home(self, mode=None, username=None):
+        runtime_mode = self._normalize_runtime_mode(mode or self.server_config.get("runtime_mode"))
+        profile = self._get_runtime_profile(runtime_mode)
+        user = str(username or self.server_config.get("username") or profile["default_username"]).strip()
+        if user == "root":
+            return "/root"
+        return f"/home/{user}" if user else "/root"
+
+    def _default_remote_dataset_path(self, mode=None):
+        return f"{self._default_remote_home(mode=mode)}/yolo_dataset"
+
+    def _default_workspace_dir(self, mode=None):
+        return f"{self._default_remote_home(mode=mode)}/cloud_training_workspace"
+
+    def _default_runs_root(self, mode=None):
+        return f"{self._default_remote_home(mode=mode)}/runs"
 
     def _set_docker_deploy_status(self, text, color="gray"):
         if hasattr(self, "docker_deploy_status_var"):
@@ -229,8 +269,8 @@ class CloudTrainingGUI:
         image_repo = str(deploy_cfg.get("image_repo", "ultralytics/ultralytics")).strip() or "ultralytics/ultralytics"
         image_tag = str(deploy_cfg.get("image_tag", "latest")).strip() or "latest"
         container_name = str(deploy_cfg.get("container_name", "cloud_training_runner")).strip() or "cloud_training_runner"
-        host_workspace_dir = str(deploy_cfg.get("host_workspace_dir", "/root/cloud_training_workspace")).strip() or "/root/cloud_training_workspace"
-        remote_dataset_dir = str(self.dataset_config.get("remote_path", "/root/yolo_dataset")).strip() or "/root/yolo_dataset"
+        host_workspace_dir = str(deploy_cfg.get("host_workspace_dir", self._default_workspace_dir())).strip() or self._default_workspace_dir()
+        remote_dataset_dir = str(self.dataset_config.get("remote_path", self._default_remote_dataset_path())).strip() or self._default_remote_dataset_path()
         enable_gpu = bool(deploy_cfg.get("enable_gpu", True))
         gpu_block = "    gpus: all\n" if enable_gpu else ""
         return (
@@ -333,14 +373,17 @@ class CloudTrainingGUI:
                 run_cmd("安装依赖工具", f"{sudo_prefix}apt-get update -y && {sudo_prefix}apt-get install -y ca-certificates curl gnupg lsb-release")
                 set_progress(20)
                 run_cmd("准备 Docker keyrings", f"{sudo_prefix}install -m 0755 -d /etc/apt/keyrings")
-                run_cmd("写入 Docker GPG", f"curl -fsSL https://download.docker.com/linux/ubuntu/gpg | {sudo_prefix}gpg --dearmor -o /etc/apt/keyrings/docker.gpg")
+                run_cmd("清理旧 Docker GPG", f"{sudo_prefix}rm -f /etc/apt/keyrings/docker.gpg")
+                run_cmd("写入 Docker GPG", f"curl -fsSL https://download.docker.com/linux/ubuntu/gpg | {sudo_prefix}gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.gpg")
                 run_cmd("修正 GPG 权限", f"{sudo_prefix}chmod a+r /etc/apt/keyrings/docker.gpg")
                 set_progress(34)
 
                 stdin, stdout, stderr = ssh.exec_command(". /etc/os-release && echo ${VERSION_CODENAME:-jammy}")
                 codename = stdout.read().decode("utf-8", errors="ignore").strip() or "jammy"
+                stdin, stdout, stderr = ssh.exec_command("dpkg --print-architecture")
+                arch = stdout.read().decode("utf-8", errors="ignore").strip() or "amd64"
                 repo_line = (
-                    f"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] "
+                    f"deb [arch={arch} signed-by=/etc/apt/keyrings/docker.gpg] "
                     f"https://download.docker.com/linux/ubuntu {codename} stable"
                 )
                 run_cmd(
@@ -354,8 +397,8 @@ class CloudTrainingGUI:
                 set_progress(58)
 
                 remote_dir = str(deploy_cfg.get("remote_deploy_dir", "/opt/cloud_training/docker_ubuntu2204")).strip() or "/opt/cloud_training/docker_ubuntu2204"
-                workspace_dir = str(deploy_cfg.get("host_workspace_dir", "/root/cloud_training_workspace")).strip() or "/root/cloud_training_workspace"
-                dataset_dir = str(self.dataset_config.get("remote_path", "/root/yolo_dataset")).strip() or "/root/yolo_dataset"
+                workspace_dir = str(deploy_cfg.get("host_workspace_dir", self._default_workspace_dir())).strip() or self._default_workspace_dir()
+                dataset_dir = str(self.dataset_config.get("remote_path", self._default_remote_dataset_path())).strip() or self._default_remote_dataset_path()
                 run_cmd("创建部署目录", f"{sudo_prefix}mkdir -p '{remote_dir}' '{workspace_dir}' '{dataset_dir}'")
                 set_progress(66)
 
@@ -758,10 +801,11 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         获取可用的Python命令（只探测，不安装）
         策略：优先使用miniforge3（标准环境），失败再只读回退
         """
+        remote_home = self._default_remote_home()
         python_candidates = [
-            "/root/miniforge3/bin/python3",
-            "/root/miniconda3/bin/python3",
-            "/root/anaconda3/bin/python3",
+            f"{remote_home}/miniforge3/bin/python3",
+            f"{remote_home}/miniconda3/bin/python3",
+            f"{remote_home}/anaconda3/bin/python3",
             "/opt/conda/bin/python3",
             "/usr/local/bin/python3",
             "/usr/bin/python3",
@@ -1678,7 +1722,13 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                     profile = self._get_runtime_profile(runtime_mode)
                     if hasattr(self, "username_var"):
                         self.username_var.set(profile["default_username"])
-                    self.save_config({'server': {'runtime_mode': runtime_mode, 'username': profile["default_username"]}})
+                    self._apply_runtime_mode_defaults(force_username=True, persist=False)
+                    patch_cfg = {
+                        'server': {'runtime_mode': runtime_mode, 'username': profile["default_username"]},
+                        'dataset': {'remote_path': self.dataset_config.get('remote_path', self._default_remote_dataset_path(mode=runtime_mode))},
+                        'deploy_docker': {'host_workspace_dir': self.config.get('deploy_docker', {}).get('host_workspace_dir', self._default_workspace_dir(mode=runtime_mode))}
+                    }
+                    self.save_config(patch_cfg)
                     self._refresh_docker_deploy_controls()
                 except Exception:
                     pass
@@ -3561,9 +3611,10 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 # 检查是否包含Windows路径格式
                 if '\\' in path_value or ':' in path_value:
                     issues.append(f"路径包含Windows格式: {path_value}")
-                # 检查是否为绝对路径但不是标准云端路径
-                if path_value.startswith('/') and not path_value.startswith('/root/'):
-                    issues.append(f"路径可能不正确: {path_value}")
+                # 检查是否为绝对路径但不是当前配置的标准云端路径
+                expected_remote = (self.dataset_config.get('remote_path') or self._default_remote_dataset_path()).replace('\\', '/').rstrip('/') + '/'
+                if path_value.startswith('/') and not path_value.startswith(expected_remote):
+                    issues.append(f"路径可能与当前服务器策略不匹配: {path_value}")
         
         # 检查train, val, test路径
         for key in ['train', 'val', 'test']:
@@ -3728,8 +3779,12 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         # 获取数据集名称
         dataset_name = os.path.basename(dataset_path)
         
-        # 修正主路径 - 设置为云端标准路径
-        fixed_data['path'] = f'/root/{dataset_name}'
+        # 修正主路径 - 优先使用当前配置的远程路径（按服务器策略自适配）
+        configured_remote = str(self.dataset_config.get('remote_path') or '').replace('\\', '/').rstrip('/')
+        if configured_remote:
+            fixed_data['path'] = configured_remote
+        else:
+            fixed_data['path'] = f"{self._default_remote_dataset_path()}/{dataset_name}"
         
         # 修正train, val, test路径 - 使用相对路径
         if 'train' in fixed_data:
@@ -3950,9 +4005,9 @@ echo "云端目录结构修复完成!"
         """在训练前强制校正云端dataset.yaml路径，避免指向/root/datasets等错误目录"""
         remote_path = self.dataset_config.get('remote_path', '').replace('\\', '/').rstrip('/')
         if not remote_path:
-            remote_path = '/root/yolo_dataset'
+            remote_path = self._default_remote_dataset_path()
         remote_path = remote_path.rstrip('/')
-        cmd = f"""cd /root && {python_cmd} - <<'PY'
+        cmd = f"""{python_cmd} - <<'PY'
 import os
 import json
 
@@ -4070,6 +4125,9 @@ PY"""
         num_classes = self.dataset_config['num_classes']
         # 确保脚本中使用的也是经过清洗的纯正 Linux 路径
         remote_path = self.dataset_config['remote_path'].replace('\\', '/').rstrip('/')
+        if not remote_path:
+            remote_path = self._default_remote_dataset_path()
+        runs_root = self._default_runs_root()
         epochs = self.training_config['epochs']
         batch_size = self.training_config['batch_size']
         learning_rate = self.training_config['learning_rate']
@@ -4244,7 +4302,7 @@ def main():
             lr0={learning_rate},
             imgsz={image_size},
             device=device_arg,
-            project='/root/runs/train',
+            project='{runs_root}/train',
             name='yolo_training_{timestamp}',
             save=True,
             save_period=10,
@@ -4261,7 +4319,7 @@ def main():
                 lr0={learning_rate},
                 imgsz={image_size},
                 device='cpu',
-                project='/root/runs/train',
+                project='{runs_root}/train',
                 name='yolo_training_{timestamp}',
                 save=True,
                 save_period=10,
@@ -4276,10 +4334,10 @@ def main():
             run_dir = str(getattr(getattr(model, "trainer", None), "save_dir", ""))
         except Exception:
             run_dir = ""
-        run_dir = run_dir or '/root/runs/train/yolo_training_{timestamp}'
+        run_dir = run_dir or '{runs_root}/train/yolo_training_{timestamp}'
         best_candidates = [
             os.path.join(run_dir, 'weights', 'best.pt'),
-            '/root/runs/train/yolo_training_{timestamp}/weights/best.pt'
+            '{runs_root}/train/yolo_training_{timestamp}/weights/best.pt'
         ]
         best_pt = None
         for p in best_candidates:
@@ -5010,14 +5068,17 @@ print(json.dumps(res, ensure_ascii=False))"""
                     # 清理命令
                     # 确保获取的是用户界面上配置的最新路径，并且强制转换为纯正的 Linux 路径格式
                     remote_path = self.remote_path_var.get().replace('\\', '/').rstrip('/')
-                    if not remote_path or remote_path == '/' or remote_path == '/root':
+                    remote_home = self._default_remote_home()
+                    if not remote_path or remote_path in {'/', remote_home}:
                         self.root.after(0, lambda: messagebox.showwarning("警告", "远程路径配置危险，禁止清理整个根目录！"))
                         return
                         
                     self.root.after(0, lambda: self.log_message(f"开始清理云端数据集目录: {remote_path}"))
-                    ssh.exec_command(f"rm -rf '{remote_path}'")
-                    ssh.exec_command("rm -rf /root/runs")
-                    ssh.exec_command("rm -f /root/*.py")
+                    runs_dir = self._default_runs_root()
+                    script_dir = remote_home
+                    ssh.exec_command(f"rm -rf {shlex.quote(remote_path)}")
+                    ssh.exec_command(f"rm -rf {shlex.quote(runs_dir)}")
+                    ssh.exec_command(f"rm -f {shlex.quote(script_dir)}/*.py")
                     
                     ssh.close()
                     
@@ -5573,6 +5634,9 @@ print(json.dumps(res, ensure_ascii=False))"""
                     self.root.after(0, lambda: self.training_status_var.set("训练失败: 未找到Python环境"))
                     return
 
+                remote_home = self._default_remote_home()
+                remote_runs_root = self._default_runs_root()
+                remote_training_script = f"{remote_home}/training_script.py"
                 self.root.after(0, lambda: self.log_message(f"✓ 使用Python: {python_cmd}"))
                 self.root.after(0, lambda: self.log_message("执行训练前环境门禁检查（只检查，不安装）..."))
                 gate_result = self._run_env_check_with_spec(ssh, python_cmd, log=False)
@@ -5596,7 +5660,8 @@ print(json.dumps(res, ensure_ascii=False))"""
                     """预下载模型函数"""
                     try:
                         # 检查模型是否已存在
-                        stdin, stdout, stderr = ssh.exec_command(f'ls -la /root/{selected_model}')
+                        model_remote_path = f"{remote_home.rstrip('/')}/{selected_model}"
+                        stdin, stdout, stderr = ssh.exec_command(f'ls -la {shlex.quote(model_remote_path)}')
                         model_check = stdout.read().decode('utf-8')
 
                         if selected_model in model_check:
@@ -5681,9 +5746,9 @@ else:
 '''
                         
                         upload_cmd = f"cat > /tmp/predownload_model.py << 'PY'\n{download_script}\nPY"
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {upload_cmd}')
+                        stdin, stdout, stderr = ssh.exec_command(upload_cmd)
                         stdout.channel.recv_exit_status()
-                        stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} /tmp/predownload_model.py')
+                        stdin, stdout, stderr = ssh.exec_command(f'{shlex.quote(str(python_cmd))} /tmp/predownload_model.py')
                         download_output = stdout.read().decode('utf-8')
                         download_error = stderr.read().decode('utf-8')
                         
@@ -5699,7 +5764,8 @@ else:
                                     self.root.after(0, lambda msg=line.strip(): self.log_message(f"  ⚠ {msg}"))
                         
                         # 再次检查模型是否下载成功
-                        stdin, stdout, stderr = ssh.exec_command(f'ls -la /root/{selected_model}')
+                        model_remote_path = f"{remote_home.rstrip('/')}/{selected_model}"
+                        stdin, stdout, stderr = ssh.exec_command(f'ls -la {shlex.quote(model_remote_path)}')
                         final_check = stdout.read().decode('utf-8')
                         
                         if selected_model in final_check:
@@ -5724,12 +5790,12 @@ else:
                     with open(temp_script, 'w', encoding='utf-8') as f:
                         f.write(script_content)
                     
-                    scp.put(temp_script, '/root/training_script.py')
+                    scp.put(temp_script, remote_training_script)
                     os.remove(temp_script)
                 
                 # 首先检查脚本是否上传成功
                 self.root.after(0, lambda: self.log_message("检查训练脚本..."))
-                stdin, stdout, stderr = ssh.exec_command('ls -la /root/training_script.py')
+                stdin, stdout, stderr = ssh.exec_command(f'ls -la {shlex.quote(remote_training_script)}')
                 script_check = stdout.read().decode('utf-8')
                 if 'training_script.py' in script_check:
                     self.root.after(0, lambda: self.log_message("✓ 训练脚本上传成功"))
@@ -5738,7 +5804,7 @@ else:
                     self.root.after(0, lambda: self.log_message("✗ 训练脚本上传失败"))
                     return
 
-                stdin, stdout, stderr = ssh.exec_command("grep -nE 'epochs=|batch=|lr0=|imgsz=' /root/training_script.py")
+                stdin, stdout, stderr = ssh.exec_command(f"grep -nE 'epochs=|batch=|lr0=|imgsz=' {shlex.quote(remote_training_script)}")
                 script_param_lines = stdout.read().decode('utf-8', errors='ignore')
                 expected_tokens = [
                     f"epochs={expected_epochs}",
@@ -5766,11 +5832,11 @@ else:
                                 
                 # 使用nohup在后台执行训练脚本，并将输出重定向到日志文件
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                log_file = f'/root/training_log_{timestamp}.txt'
+                log_file = f'{remote_home}/training_log_{timestamp}.txt'
                 
                 # 刷新Python模块缓存
                 self.root.after(0, lambda: self.log_message("刷新Python模块缓存..."))
-                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import importlib; importlib.invalidate_caches(); print(\\"缓存已刷新\\")"')
+                stdin, stdout, stderr = ssh.exec_command(f'{shlex.quote(str(python_cmd))} -c "import importlib; importlib.invalidate_caches(); print(\\"缓存已刷新\\")"')
                 cache_result = stdout.read().decode('utf-8').strip()
                 self.root.after(0, lambda: self.log_message(f"缓存刷新结果: {cache_result}"))
                 
@@ -5785,7 +5851,7 @@ else:
                 if has_gpu:
                     # 仅做诊断，不做安装；训练阶段禁止任何自动修复
                     cuda_check_cmd = f'{python_cmd} -c "import torch; print(f\\"cuda_available={{torch.cuda.is_available()}}\\"); print(f\\"cuda_version={{torch.version.cuda}}\\"); print(f\\"torch_version={{torch.__version__}}\\")"'
-                    stdin, stdout, stderr = ssh.exec_command(f'cd /root && {cuda_check_cmd}')
+                    stdin, stdout, stderr = ssh.exec_command(cuda_check_cmd)
                     cuda_check_output = stdout.read().decode('utf-8').strip()
                     cuda_check_error = stderr.read().decode('utf-8').strip()
 
@@ -5816,7 +5882,7 @@ else:
                 # 2. 设置PYTHONPATH优先使用用户本地路径
                 # 3. 使用-E标志忽略环境变量，但不使用-s标志（-s会禁用用户包）
                 # 4. 移除-I标志，因为它会禁用用户站点包目录
-                stdin, stdout, stderr = ssh.exec_command(f'cd /root && {python_cmd} -c "import sys; print(str(sys.version_info.major)+\\".\\"+str(sys.version_info.minor))"')
+                stdin, stdout, stderr = ssh.exec_command(f'{shlex.quote(str(python_cmd))} -c "import sys; print(str(sys.version_info.major)+\\".\\"+str(sys.version_info.minor))"')
                 py_mm = stdout.read().decode('utf-8').strip() or '3.10'
                 py_bin_dir = os.path.dirname(str(python_cmd).replace('\\', '/'))
                 env_setup = [
@@ -5829,18 +5895,21 @@ else:
                     'export PYTHONDONTWRITEBYTECODE=1',
                     f'export PATH={py_bin_dir}:$PATH',
                     'unset PYTHONSTARTUP',
-                    f'export PYTHONPATH=/root/miniforge3/lib/python{py_mm}/site-packages:/root/.local/lib/python{py_mm}/site-packages:$PYTHONPATH'
+                    f'export PYTHONPATH={remote_home}/miniforge3/lib/python{py_mm}/site-packages:{remote_home}/.local/lib/python{py_mm}/site-packages:$PYTHONPATH'
                 ]
                 env_vars = ' && '.join(env_setup)
                 
                 # 使用-u确保无缓冲输出，移除-E标志以确保PYTHONPATH环境变量生效
-                isolated_python_cmd = f'{python_cmd} -u'
+                isolated_python_cmd = f'{shlex.quote(str(python_cmd))} -u'
                 self._reset_loss_tracking()
                 self._run_dir_logged = False
                 run_name = f'yolo_training_{timestamp}'
                 self.training_run_name = run_name
-                self.training_run_dir = f'/root/runs/train/{run_name}'
-                training_cmd = f'cd /root && {env_vars} && nohup {isolated_python_cmd} training_script.py > {log_file} 2>&1 &'
+                self.training_run_dir = f'{remote_runs_root}/train/{run_name}'
+                training_cmd = (
+                    f'cd {shlex.quote(remote_home)} && {env_vars} && '
+                    f'nohup {isolated_python_cmd} {shlex.quote(remote_training_script)} > {shlex.quote(log_file)} 2>&1 &'
+                )
                 stdin, stdout, stderr = ssh.exec_command(training_cmd)
                 
                 # 等待命令启动
@@ -9024,21 +9093,23 @@ else:
 
         log_entry = f"[{timestamp}] {normalized}\n"
 
-        # 插入文本
-        self.log_text.insert(tk.END, log_entry)
+        if hasattr(self, "log_text"):
+            # 插入文本
+            self.log_text.insert(tk.END, log_entry)
 
-        # 为刚插入的行设置颜色tag
-        start_idx = self.log_text.index("end-2l linestart")
-        end_idx = self.log_text.index("end-1c")
-        self.log_text.tag_add(level, start_idx, end_idx)
-        self.log_text.tag_config(level, foreground=color_map.get(level, '#212529'))
+            # 为刚插入的行设置颜色tag
+            start_idx = self.log_text.index("end-2l linestart")
+            end_idx = self.log_text.index("end-1c")
+            self.log_text.tag_add(level, start_idx, end_idx)
+            self.log_text.tag_config(level, foreground=color_map.get(level, '#212529'))
 
-        self.log_text.see(tk.END)
+            self.log_text.see(tk.END)
 
         if hasattr(self, 'status_var'):
             self.status_var.set(normalized)
 
-        self.logger.info(normalized)
+        if hasattr(self, "logger"):
+            self.logger.info(normalized)
 
 def main():
     root = ttk.Window(title="云端训练脚本优化管理平台", themename="cosmo", size=(1200, 800))

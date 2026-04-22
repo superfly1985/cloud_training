@@ -9,7 +9,7 @@
   },
   "dataset": {
     "local_path": "D:/picture/00001/yolo_dataset",
-    "remote_path": "/root/yolo_dataset",
+    "remote_path": "/home/ubuntu/yolo_dataset",
     "dataset_name": "yolo_dataset",
     "classes": [
       "0: 焊点漏包"
@@ -39,9 +39,9 @@
     "image_tag": "latest",
     "container_name": "cloud_training_runner",
     "remote_deploy_dir": "/opt/cloud_training/docker_ubuntu2204",
-    "host_workspace_dir": "/root/cloud_training_workspace",
+    "host_workspace_dir": "/home/ubuntu/cloud_training_workspace",
     "enable_gpu": true,
-    "last_status": "未部署",
+    "last_status": "部署失败: [Errno 13] Permission denied",
     "last_deploy_time": ""
   },
   "upload": {
