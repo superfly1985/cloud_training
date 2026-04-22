@@ -9,36 +9,34 @@
 - **当前版本**: v2.2.10
 - **主要功能**: 云端训练、实时监控、模型管理、监控大屏、图像增强参数配置（含激活控制）（纯云端模式）
 
-## 目录结构
+## 目录结构（已分层）
 
-```
+```text
 .
-├── cloud_training_gui.py      # 主程序入口
-├── cloud_training_config.json # 配置文件
-├── cloud_training_gui.spec    # PyInstaller打包配置
-├── requirements.txt           # Python依赖
-├── README.md                  # 项目说明
+├── cloud_training_gui.py                     # 主程序入口（统一入口）
+├── cloud_training_config.json                # 服务器配置
+├── cloud_training_gui.spec                   # PyInstaller 打包配置
+├── requirements.txt                          # 当前运行依赖
+├── README.md
 │
-├── src/                       # 源代码模块（预留）
-├── tools/                     # 工具脚本
-│   ├── check_server_env.py    # 服务器环境检查
-│   ├── export_model.py        # 模型导出
-│   └── train_yolov8.py        # 本地训练脚本
+├── configs/                                  # 运行配置分层
+│   ├── preinstalled_pytorch/
+│   └── docker_ubuntu2204/
 │
-├── test/                      # 测试相关
-│   ├── logs/                  # 测试日志
-│   ├── mock_dataset/          # 测试数据集
-│   └── scripts/               # 测试脚本
+├── deploy/                                   # 部署资产
+│   └── docker_ubuntu2204/                    # Dockerfile/compose/lock 等
 │
-├── docs/                      # 文档
-│   ├── 使用说明/              # 用户使用文档
-│   └── 开发文档/              # 开发相关文档
+├── scripts/                                  # 环境脚本分层
+│   ├── preinstalled_pytorch/
+│   └── linux/
 │
-├── assets/                    # 资源文件
-│   ├── yolov8n.pt            # 预训练模型
-│   └── icons/                # 图标资源
+├── docs/
+│   └── 开发文档/
+│       ├── preinstalled_pytorch/
+│       └── docker_ubuntu2204/
 │
-└── release/                   # 发布文件
+├── assets/                                   # 资源文件
+└── changelog.md
 ```
 
 ## 快速开始
@@ -77,6 +75,12 @@ pyinstaller cloud_training_gui.spec
 ## 开发文档
 
 开发相关文档请参考 `docs/开发文档/` 目录。
+
+### 路径重构说明
+
+- 主入口不变：`cloud_training_gui.py`
+- 通过服务器运行模式分流：`preinstalled_pytorch` 与 `docker_ubuntu2204`
+- Ubuntu 22.04 Docker 相关文件统一放在 `deploy/docker_ubuntu2204/`
 
 ## 注意事项
 

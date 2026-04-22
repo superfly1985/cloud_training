@@ -1,4 +1,4 @@
-# YOLO 预训练模型与依赖（Windows）
+# YOLO 预训练模型与依赖（预装 PyTorch 路线）
 
 ## 环境准备（推荐）
 - 位置：`D:\OneDrive\24.Visual AI\training_scripts`
@@ -11,7 +11,7 @@ powershell -ExecutionPolicy Bypass -File .\setup_env.ps1
 ## 快速获取预训练模型
 - 方式一（脚本）：
 ```
-.\.venv\Scripts\python.exe .\download_pretrained.py
+.\.venv\Scripts\python.exe .\scripts\preinstalled_pytorch\download_pretrained.py
 ```
 - 方式二（CLI，自动下载）：
 ```
@@ -22,7 +22,7 @@ yolo export model=yolov8n.pt format=onnx  # 将自动下载 yolov8n.pt
 
 ## 训练（示例）
 ```
-.\.venv\Scripts\python.exe .\train_yolov8.py `
+.\.venv\Scripts\python.exe .\scripts\preinstalled_pytorch\train_yolov8.py `
   --model yolov8n.pt `
   --data D:\data\your_dataset.yaml `
   --epochs 100 --imgsz 640
@@ -30,7 +30,7 @@ yolo export model=yolov8n.pt format=onnx  # 将自动下载 yolov8n.pt
 
 ## 导出（示例）
 ```
-.\.venv\Scripts\python.exe .\export_model.py --model runs\detect\train\weights\best.pt --format onnx
+.\.venv\Scripts\python.exe .\scripts\preinstalled_pytorch\export_model.py --model runs\detect\train\weights\best.pt --format onnx
 ```
 
 ## 主要依赖

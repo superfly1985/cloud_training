@@ -41,6 +41,20 @@ class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
         self.app_version = "v2.2.10"
+        self.default_runtime_mode = "preinstalled_pytorch"
+        self.valid_runtime_modes = {"preinstalled_pytorch", "docker_ubuntu2204"}
+        self.runtime_profiles = {
+            "preinstalled_pytorch": {
+                "display_name": "预装PyTorch",
+                "expected_ubuntu": "20.04",
+                "default_username": "root",
+            },
+            "docker_ubuntu2204": {
+                "display_name": "Docker(Ubuntu22.04)",
+                "expected_ubuntu": "22.04",
+                "default_username": "ubuntu",
+            },
+        }
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
         self.root.geometry("1200x800")
         self.root.resizable(True, True)
@@ -54,7 +68,8 @@ class CloudTrainingGUI:
             'port': 22,
             'username': 'root',
             'password': 'Vonzeus01',
-            'key_file': ''
+            'key_file': '',
+            'runtime_mode': self.default_runtime_mode
         }
         
         self.dataset_config = {
@@ -79,6 +94,16 @@ class CloudTrainingGUI:
             'augment_hsv_s': 0.7,
             'augment_hsv_v': 0.4
         }
+        self.deploy_docker_config = {
+            'image_repo': 'ultralytics/ultralytics',
+            'image_tag': 'latest',
+            'container_name': 'cloud_training_runner',
+            'remote_deploy_dir': '/opt/cloud_training/docker_ubuntu2204',
+            'host_workspace_dir': '/root/cloud_training_workspace',
+            'enable_gpu': True,
+            'last_status': '未部署',
+            'last_deploy_time': ''
+        }
 
         # 状态变量
         self.is_connected = False
@@ -94,6 +119,7 @@ class CloudTrainingGUI:
         self.last_upload_plan = None
         self._persistence_bound = False
         self.auto_recommend_running = False
+        self.docker_deploy_in_progress = False
         
         # SSH客户端
         self.ssh_client = None
@@ -131,12 +157,14 @@ class CloudTrainingGUI:
             'server': self.server_config,
             'dataset': self.dataset_config,
             'training': self.training_config,
+            'deploy_docker': self.deploy_docker_config,
             'upload': {
                 'max_workers': 8,
                 'retry_times': 3
             }
         }
         self.load_config()
+        self._apply_runtime_mode_defaults(force_username=False)
         
         # 设置UI
         self.setup_ui()
@@ -145,6 +173,237 @@ class CloudTrainingGUI:
         
         # 设置日志
         self.setup_logging()
+
+    def _normalize_runtime_mode(self, runtime_mode):
+        mode = str(runtime_mode or "").strip()
+        if mode not in self.valid_runtime_modes:
+            return self.default_runtime_mode
+        return mode
+
+    def _get_runtime_profile(self, runtime_mode=None):
+        mode = self._normalize_runtime_mode(runtime_mode or self.server_config.get("runtime_mode"))
+        return self.runtime_profiles.get(mode, self.runtime_profiles[self.default_runtime_mode])
+
+    def _apply_runtime_mode_defaults(self, force_username=False):
+        mode = self._normalize_runtime_mode(self.server_config.get("runtime_mode"))
+        profile = self._get_runtime_profile(mode)
+        default_username = profile["default_username"]
+        current_username = (self.server_config.get("username") or "").strip()
+        if force_username or not current_username:
+            self.server_config["username"] = default_username
+            if hasattr(self, "username_var"):
+                self.username_var.set(default_username)
+
+    def _set_docker_deploy_status(self, text, color="gray"):
+        if hasattr(self, "docker_deploy_status_var"):
+            self.docker_deploy_status_var.set(text)
+        if hasattr(self, "docker_deploy_status_label"):
+            self.docker_deploy_status_label.config(foreground=color)
+
+    def _refresh_docker_deploy_controls(self):
+        if not hasattr(self, "deploy_docker_button"):
+            return
+        runtime_mode = self._normalize_runtime_mode(
+            self.runtime_mode_var.get() if hasattr(self, "runtime_mode_var") else self.server_config.get("runtime_mode")
+        )
+        docker_mode = runtime_mode == "docker_ubuntu2204"
+        enabled = docker_mode and self.is_connected and (not self.docker_deploy_in_progress)
+        self.deploy_docker_button.configure(state=("normal" if enabled else "disabled"))
+        if not docker_mode:
+            self._set_docker_deploy_status("当前模式非 docker_ubuntu2204", "gray")
+
+    def _build_connect_params(self):
+        connect_params = {
+            "hostname": self.server_config["hostname"],
+            "port": self.server_config["port"],
+            "username": self.server_config["username"],
+        }
+        if self.server_config.get("key_file"):
+            connect_params["key_filename"] = self.server_config["key_file"]
+        else:
+            connect_params["password"] = self.server_config["password"]
+        return connect_params
+
+    def _build_docker_compose_content(self):
+        deploy_cfg = self.config.get("deploy_docker", self.deploy_docker_config)
+        image_repo = str(deploy_cfg.get("image_repo", "ultralytics/ultralytics")).strip() or "ultralytics/ultralytics"
+        image_tag = str(deploy_cfg.get("image_tag", "latest")).strip() or "latest"
+        container_name = str(deploy_cfg.get("container_name", "cloud_training_runner")).strip() or "cloud_training_runner"
+        host_workspace_dir = str(deploy_cfg.get("host_workspace_dir", "/root/cloud_training_workspace")).strip() or "/root/cloud_training_workspace"
+        remote_dataset_dir = str(self.dataset_config.get("remote_path", "/root/yolo_dataset")).strip() or "/root/yolo_dataset"
+        enable_gpu = bool(deploy_cfg.get("enable_gpu", True))
+        gpu_block = "    gpus: all\n" if enable_gpu else ""
+        return (
+            "name: cloud_training\n"
+            "services:\n"
+            "  trainer:\n"
+            f"    image: {image_repo}:{image_tag}\n"
+            f"    container_name: {container_name}\n"
+            "    working_dir: /workspace\n"
+            "    tty: true\n"
+            "    stdin_open: true\n"
+            "    restart: unless-stopped\n"
+            f"{gpu_block}"
+            "    environment:\n"
+            "      YOLO_AUTOINSTALL: \"0\"\n"
+            "      ULTRALYTICS_AUTOINSTALL: \"0\"\n"
+            "      PYTHONDONTWRITEBYTECODE: \"1\"\n"
+            "      TZ: \"Asia/Shanghai\"\n"
+            "    command: [\"bash\", \"-lc\", \"sleep infinity\"]\n"
+            "    volumes:\n"
+            f"      - {host_workspace_dir}:/workspace\n"
+            f"      - {remote_dataset_dir}:/workspace/dataset\n"
+        )
+
+    def one_click_deploy_docker(self):
+        if not self.is_connected:
+            messagebox.showerror("错误", "请先测试服务器连接")
+            return
+        runtime_mode = self._normalize_runtime_mode(self.server_config.get("runtime_mode"))
+        if runtime_mode != "docker_ubuntu2204":
+            messagebox.showwarning("提示", "仅在 docker_ubuntu2204 模式下可执行一键部署")
+            return
+        self.update_server_config()
+        deploy_cfg = self.config.get("deploy_docker", self.deploy_docker_config)
+        image_repo = str(deploy_cfg.get("image_repo", "")).strip()
+        image_tag = str(deploy_cfg.get("image_tag", "")).strip()
+        if not image_repo or not image_tag:
+            messagebox.showerror("错误", "deploy_docker 配置缺失 image_repo 或 image_tag")
+            return
+
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Docker 一键部署")
+        progress_window.geometry("760x520")
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        ttk.Label(progress_window, text="正在执行 Docker 一键部署...", font=("Arial", 12, "bold")).pack(pady=10)
+        deploy_progress_var = tk.DoubleVar(value=0)
+        ttk.Progressbar(progress_window, variable=deploy_progress_var, maximum=100).pack(fill='x', padx=16, pady=(0, 10))
+
+        log_frame = ttk.Frame(progress_window)
+        log_frame.pack(fill='both', expand=True, padx=16, pady=8)
+        deploy_log = tk.Text(log_frame, wrap='word', font=('Consolas', 9))
+        deploy_scrollbar = ttk.Scrollbar(log_frame, orient='vertical', command=deploy_log.yview)
+        deploy_log.configure(yscrollcommand=deploy_scrollbar.set)
+        deploy_log.pack(side='left', fill='both', expand=True)
+        deploy_scrollbar.pack(side='right', fill='y')
+        ttk.Button(progress_window, text="关闭", command=progress_window.destroy).pack(pady=(0, 12))
+
+        def append_log(message):
+            self.root.after(0, lambda m=message: deploy_log.insert(tk.END, m + "\n"))
+            self.root.after(0, lambda: deploy_log.see(tk.END))
+
+        def set_progress(v):
+            self.root.after(0, lambda x=v: deploy_progress_var.set(x))
+
+        def deploy_thread():
+            ssh = None
+            try:
+                self.docker_deploy_in_progress = True
+                self.root.after(0, self._refresh_docker_deploy_controls)
+                self.root.after(0, lambda: self._set_docker_deploy_status("部署中...", "orange"))
+                append_log("开始执行 Docker 一键部署")
+                append_log("=" * 60)
+                set_progress(3)
+
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(**self._build_connect_params(), timeout=20)
+                append_log("SSH 已连接")
+                set_progress(8)
+
+                use_sudo = self.server_config.get("username", "").strip() != "root"
+                sudo_prefix = "sudo " if use_sudo else ""
+
+                def run_cmd(step_name, cmd, timeout=1800):
+                    append_log(f"\n[{step_name}]")
+                    append_log(f"$ {cmd}")
+                    stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
+                    output = stdout.read().decode("utf-8", errors="ignore").strip()
+                    err = stderr.read().decode("utf-8", errors="ignore").strip()
+                    code = stdout.channel.recv_exit_status()
+                    if output:
+                        append_log(output)
+                    if err:
+                        append_log(err)
+                    if code != 0:
+                        raise RuntimeError(f"{step_name} 失败，退出码 {code}")
+
+                run_cmd("安装依赖工具", f"{sudo_prefix}apt-get update -y && {sudo_prefix}apt-get install -y ca-certificates curl gnupg lsb-release")
+                set_progress(20)
+                run_cmd("准备 Docker keyrings", f"{sudo_prefix}install -m 0755 -d /etc/apt/keyrings")
+                run_cmd("写入 Docker GPG", f"curl -fsSL https://download.docker.com/linux/ubuntu/gpg | {sudo_prefix}gpg --dearmor -o /etc/apt/keyrings/docker.gpg")
+                run_cmd("修正 GPG 权限", f"{sudo_prefix}chmod a+r /etc/apt/keyrings/docker.gpg")
+                set_progress(34)
+
+                stdin, stdout, stderr = ssh.exec_command(". /etc/os-release && echo ${VERSION_CODENAME:-jammy}")
+                codename = stdout.read().decode("utf-8", errors="ignore").strip() or "jammy"
+                repo_line = (
+                    f"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] "
+                    f"https://download.docker.com/linux/ubuntu {codename} stable"
+                )
+                run_cmd(
+                    "写入 Docker 官方仓库",
+                    f"echo '{repo_line}' | {sudo_prefix}tee /etc/apt/sources.list.d/docker.list >/dev/null"
+                )
+                set_progress(45)
+
+                run_cmd("安装 Docker 引擎", f"{sudo_prefix}apt-get update -y && {sudo_prefix}apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin")
+                run_cmd("启动 Docker 服务", f"{sudo_prefix}systemctl enable --now docker")
+                set_progress(58)
+
+                remote_dir = str(deploy_cfg.get("remote_deploy_dir", "/opt/cloud_training/docker_ubuntu2204")).strip() or "/opt/cloud_training/docker_ubuntu2204"
+                workspace_dir = str(deploy_cfg.get("host_workspace_dir", "/root/cloud_training_workspace")).strip() or "/root/cloud_training_workspace"
+                dataset_dir = str(self.dataset_config.get("remote_path", "/root/yolo_dataset")).strip() or "/root/yolo_dataset"
+                run_cmd("创建部署目录", f"{sudo_prefix}mkdir -p '{remote_dir}' '{workspace_dir}' '{dataset_dir}'")
+                set_progress(66)
+
+                remote_compose_path = f"{remote_dir}/docker-compose.yml"
+                compose_content = self._build_docker_compose_content()
+                sftp = ssh.open_sftp()
+                with sftp.open(remote_compose_path, 'w') as f:
+                    f.write(compose_content)
+                sftp.close()
+                append_log(f"已上传 compose: {remote_compose_path}")
+                set_progress(74)
+
+                run_cmd("拉取镜像", f"{sudo_prefix}docker compose -f '{remote_compose_path}' pull", timeout=3600)
+                set_progress(84)
+                run_cmd("启动容器", f"{sudo_prefix}docker compose -f '{remote_compose_path}' up -d", timeout=1200)
+                set_progress(92)
+
+                run_cmd("校验 Docker 版本", f"{sudo_prefix}docker --version")
+                run_cmd("校验 Compose 版本", f"{sudo_prefix}docker compose version")
+                run_cmd("校验容器状态", f"{sudo_prefix}docker compose -f '{remote_compose_path}' ps")
+                set_progress(100)
+
+                now_text = time.strftime("%Y-%m-%d %H:%M:%S")
+                self.config["deploy_docker"]["last_status"] = "部署成功"
+                self.config["deploy_docker"]["last_deploy_time"] = now_text
+                self.save_config({"deploy_docker": self.config["deploy_docker"]})
+                self.root.after(0, lambda: self._set_docker_deploy_status(f"部署成功 {now_text}", "green"))
+                self.root.after(0, lambda: self.log_message("Docker 一键部署成功"))
+                append_log("\n部署完成")
+                self.root.after(0, lambda: messagebox.showinfo("成功", "Docker 一键部署完成"))
+            except Exception as e:
+                err = str(e)
+                self.config["deploy_docker"]["last_status"] = f"部署失败: {err}"
+                self.save_config({"deploy_docker": self.config["deploy_docker"]})
+                self.root.after(0, lambda m=err: self._set_docker_deploy_status(f"部署失败: {m}", "red"))
+                self.root.after(0, lambda m=err: self.log_message(f"Docker 一键部署失败: {m}"))
+                append_log(f"\n部署失败: {err}")
+                self.root.after(0, lambda m=err: messagebox.showerror("错误", f"Docker 一键部署失败:\n{m}"))
+            finally:
+                if ssh:
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+                self.docker_deploy_in_progress = False
+                self.root.after(0, self._refresh_docker_deploy_controls)
+
+        threading.Thread(target=deploy_thread, daemon=True).start()
 
     def _set_upload_progress(self, value):
         try:
@@ -165,6 +424,7 @@ class CloudTrainingGUI:
                 self.upload_toggle_button.configure(state=("normal" if upload_enabled else "disabled"))
             if hasattr(self, 'start_training_button'):
                 self.start_training_button.configure(state=("normal" if train_enabled else "disabled"))
+            self._refresh_docker_deploy_controls()
         except Exception:
             pass
 
@@ -573,20 +833,37 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.port_var = tk.StringVar(value=str(self.server_config['port']))
         ttk.Entry(server_info_frame, textvariable=self.port_var, width=30).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
         
+        # 服务器种类
+        ttk.Label(server_info_frame, text="服务器种类:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.runtime_mode_var = tk.StringVar(value=self._normalize_runtime_mode(self.server_config.get("runtime_mode")))
+        runtime_combo = ttk.Combobox(
+            server_info_frame,
+            textvariable=self.runtime_mode_var,
+            values=["preinstalled_pytorch", "docker_ubuntu2204"],
+            state="readonly",
+            width=30,
+        )
+        runtime_combo.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        ttk.Label(
+            server_info_frame,
+            text="preinstalled_pytorch=Ubuntu20.04, docker_ubuntu2204=Ubuntu22.04",
+            foreground="gray",
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(0, 2))
+
         # 用户名
-        ttk.Label(server_info_frame, text="用户名:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_info_frame, text="用户名:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.username_var = tk.StringVar(value=self.server_config['username'])
-        ttk.Entry(server_info_frame, textvariable=self.username_var, width=30).grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        ttk.Entry(server_info_frame, textvariable=self.username_var, width=30).grid(row=4, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
         
         # 密码
-        ttk.Label(server_info_frame, text="密码:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_info_frame, text="密码:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.password_var = tk.StringVar(value=self.server_config['password'])
-        ttk.Entry(server_info_frame, textvariable=self.password_var, show="*", width=30).grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        ttk.Entry(server_info_frame, textvariable=self.password_var, show="*", width=30).grid(row=5, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
         
         # 密钥文件（可选）
-        ttk.Label(server_info_frame, text="密钥文件:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_info_frame, text="密钥文件:").grid(row=6, column=0, sticky=tk.W, pady=2)
         key_frame = ttk.Frame(server_info_frame)
-        key_frame.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
+        key_frame.grid(row=6, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=2)
         
         self.key_file_var = tk.StringVar(value=self.server_config['key_file'])
         ttk.Entry(key_frame, textvariable=self.key_file_var, width=25).grid(row=0, column=0, sticky=(tk.W, tk.E))
@@ -677,34 +954,56 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.port_var = tk.StringVar(value=str(self.server_config['port']))
         ttk.Entry(server_frame, textvariable=self.port_var).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=2)
 
-        ttk.Label(server_frame, text="用户名:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_frame, text="服务器种类:").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.runtime_mode_var = tk.StringVar(value=self._normalize_runtime_mode(self.server_config.get("runtime_mode")))
+        runtime_combo = ttk.Combobox(
+            server_frame,
+            textvariable=self.runtime_mode_var,
+            values=["preinstalled_pytorch", "docker_ubuntu2204"],
+            state="readonly",
+        )
+        runtime_combo.grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2)
+        ttk.Label(
+            server_frame,
+            text="preinstalled_pytorch=Ubuntu20.04, docker_ubuntu2204=Ubuntu22.04",
+            foreground="gray",
+        ).grid(row=3, column=0, columnspan=2, sticky=tk.W, pady=(0, 2))
+
+        ttk.Label(server_frame, text="用户名:").grid(row=4, column=0, sticky=tk.W, pady=2)
         self.username_var = tk.StringVar(value=self.server_config['username'])
-        ttk.Entry(server_frame, textvariable=self.username_var).grid(row=2, column=1, sticky=(tk.W, tk.E), pady=2)
+        ttk.Entry(server_frame, textvariable=self.username_var).grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
 
-        ttk.Label(server_frame, text="密码:").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_frame, text="密码:").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.password_var = tk.StringVar(value=self.server_config['password'])
-        ttk.Entry(server_frame, textvariable=self.password_var, show="*").grid(row=3, column=1, sticky=(tk.W, tk.E), pady=2)
+        ttk.Entry(server_frame, textvariable=self.password_var, show="*").grid(row=5, column=1, sticky=(tk.W, tk.E), pady=2)
 
-        ttk.Label(server_frame, text="密钥文件:").grid(row=4, column=0, sticky=tk.W, pady=2)
+        ttk.Label(server_frame, text="密钥文件:").grid(row=6, column=0, sticky=tk.W, pady=2)
         key_frame = ttk.Frame(server_frame)
-        key_frame.grid(row=4, column=1, sticky=(tk.W, tk.E), pady=2)
+        key_frame.grid(row=6, column=1, sticky=(tk.W, tk.E), pady=2)
         key_frame.columnconfigure(0, weight=1)
         self.key_file_var = tk.StringVar(value=self.server_config['key_file'])
         ttk.Entry(key_frame, textvariable=self.key_file_var).grid(row=0, column=0, sticky=(tk.W, tk.E))
         ttk.Button(key_frame, text="选择", command=self.select_key_file, width=6).grid(row=0, column=1, padx=(5, 0))
 
         server_button_frame = ttk.Frame(server_frame)
-        server_button_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
+        server_button_frame.grid(row=7, column=0, columnspan=2, pady=(10, 0))
         server_button_frame.columnconfigure(0, weight=1)
         server_button_frame.columnconfigure(1, weight=1)
         server_button_frame.columnconfigure(2, weight=1)
+        server_button_frame.columnconfigure(3, weight=1)
         ttk.Button(server_button_frame, text="测试连接", command=self.test_connection).grid(row=0, column=0, padx=2, sticky=(tk.W, tk.E))
         ttk.Button(server_button_frame, text="保存配置", command=self.save_server_config).grid(row=0, column=1, padx=2, sticky=(tk.W, tk.E))
         ttk.Button(server_button_frame, text="文件管理器", command=self.get_server_info).grid(row=0, column=2, padx=2, sticky=(tk.W, tk.E))
+        self.deploy_docker_button = ttk.Button(server_button_frame, text="一键部署Docker", command=self.one_click_deploy_docker)
+        self.deploy_docker_button.grid(row=0, column=3, padx=2, sticky=(tk.W, tk.E))
 
         self.connection_status_var = tk.StringVar(value="未连接")
         self.connection_status_label = ttk.Label(server_frame, textvariable=self.connection_status_var, foreground="red", anchor="center")
-        self.connection_status_label.grid(row=6, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
+        self.connection_status_label.grid(row=8, column=0, columnspan=2, pady=(5, 0), sticky=(tk.W, tk.E))
+        self.docker_deploy_status_var = tk.StringVar(value=self.config.get("deploy_docker", {}).get("last_status", "未部署"))
+        self.docker_deploy_status_label = ttk.Label(server_frame, textvariable=self.docker_deploy_status_var, foreground="gray", anchor="center")
+        self.docker_deploy_status_label.grid(row=9, column=0, columnspan=2, pady=(3, 0), sticky=(tk.W, tk.E))
+        self._refresh_docker_deploy_controls()
 
         # 2. 训练参数配置 (均分双列布局：左列基础参数，右列图像增强)
         params_frame = ttk.Labelframe(left_col, text="训练参数配置", padding="10")
@@ -1242,13 +1541,20 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             if not isinstance(cfg, dict):
                 cfg = {}
             self.server_config.update(cfg.get('server', {}))
+            runtime_mode = self.server_config.get('runtime_mode', self.default_runtime_mode)
+            if runtime_mode not in self.valid_runtime_modes:
+                runtime_mode = self.default_runtime_mode
+            self.server_config['runtime_mode'] = runtime_mode
             self.dataset_config.update(cfg.get('dataset', {}))
             self.training_config.update(cfg.get('training', {}))
             upload_cfg = cfg.get('upload', {})
+            deploy_cfg = cfg.get('deploy_docker', {})
+            self.deploy_docker_config.update(deploy_cfg)
             self.config = {
                 'server': self.server_config,
                 'dataset': self.dataset_config,
                 'training': self.training_config,
+                'deploy_docker': self.deploy_docker_config,
                 'upload': {
                     'max_workers': upload_cfg.get('max_workers', 8),
                     'retry_times': upload_cfg.get('retry_times', 3)
@@ -1258,6 +1564,7 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 'server': dict(self.server_config),
                 'dataset': dict(self.dataset_config),
                 'training': dict(self.training_config),
+                'deploy_docker': dict(self.config['deploy_docker']),
                 'upload': dict(self.config['upload'])
             }
         except Exception as e:
@@ -1266,6 +1573,7 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 'server': dict(self.server_config),
                 'dataset': dict(self.dataset_config),
                 'training': dict(self.training_config),
+                'deploy_docker': dict(self.config['deploy_docker']),
                 'upload': dict(self.config['upload'])
             }
     
@@ -1274,10 +1582,25 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             if isinstance(cfg, dict):
                 if 'server' in cfg:
                     self.server_config.update(cfg['server'])
+                    runtime_mode = self.server_config.get('runtime_mode', self.default_runtime_mode)
+                    if runtime_mode not in self.valid_runtime_modes:
+                        runtime_mode = self.default_runtime_mode
+                    self.server_config['runtime_mode'] = runtime_mode
                 if 'dataset' in cfg:
                     self.dataset_config.update(cfg['dataset'])
                 if 'training' in cfg:
                     self.training_config.update(cfg['training'])
+                if 'deploy_docker' in cfg:
+                    self.config['deploy_docker'] = {
+                        'image_repo': cfg['deploy_docker'].get('image_repo', self.config['deploy_docker']['image_repo']),
+                        'image_tag': cfg['deploy_docker'].get('image_tag', self.config['deploy_docker']['image_tag']),
+                        'container_name': cfg['deploy_docker'].get('container_name', self.config['deploy_docker']['container_name']),
+                        'remote_deploy_dir': cfg['deploy_docker'].get('remote_deploy_dir', self.config['deploy_docker']['remote_deploy_dir']),
+                        'host_workspace_dir': cfg['deploy_docker'].get('host_workspace_dir', self.config['deploy_docker']['host_workspace_dir']),
+                        'enable_gpu': bool(cfg['deploy_docker'].get('enable_gpu', self.config['deploy_docker']['enable_gpu'])),
+                        'last_status': cfg['deploy_docker'].get('last_status', self.config['deploy_docker']['last_status']),
+                        'last_deploy_time': cfg['deploy_docker'].get('last_deploy_time', self.config['deploy_docker']['last_deploy_time'])
+                    }
                 if 'upload' in cfg:
                     self.config['upload'] = {
                         'max_workers': cfg['upload'].get('max_workers', self.config['upload']['max_workers']),
@@ -1287,6 +1610,7 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 'server': self.server_config,
                 'dataset': self.dataset_config,
                 'training': self.training_config,
+                'deploy_docker': self.config['deploy_docker'],
                 'upload': self.config['upload']
             }
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -1345,6 +1669,26 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
             bind(self.password_var, 'server', 'password')
         if hasattr(self, 'key_file_var'):
             bind(self.key_file_var, 'server', 'key_file')
+        if hasattr(self, 'runtime_mode_var'):
+            bind(self.runtime_mode_var, 'server', 'runtime_mode')
+            def _runtime_mode_changed(*_):
+                try:
+                    runtime_mode = self._normalize_runtime_mode(self.runtime_mode_var.get())
+                    self.server_config['runtime_mode'] = runtime_mode
+                    profile = self._get_runtime_profile(runtime_mode)
+                    if hasattr(self, "username_var"):
+                        self.username_var.set(profile["default_username"])
+                    self.save_config({'server': {'runtime_mode': runtime_mode, 'username': profile["default_username"]}})
+                    self._refresh_docker_deploy_controls()
+                except Exception:
+                    pass
+            try:
+                self.runtime_mode_var.trace_add('write', _runtime_mode_changed)
+            except Exception:
+                try:
+                    self.runtime_mode_var.trace('w', _runtime_mode_changed)
+                except Exception:
+                    pass
         
         if hasattr(self, 'local_path_var'):
             bind(self.local_path_var, 'dataset', 'local_path')
@@ -1466,6 +1810,18 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
                 # 测试命令
                 stdin, stdout, stderr = ssh.exec_command('echo "Connection test successful"')
                 result = stdout.read().decode().strip()
+
+                # 连接门禁：按服务器种类校验 Ubuntu 主版本
+                runtime_mode = self._normalize_runtime_mode(self.server_config.get("runtime_mode"))
+                profile = self._get_runtime_profile(runtime_mode)
+                expected_ubuntu = profile["expected_ubuntu"]
+                stdin, stdout, stderr = ssh.exec_command("source /etc/os-release >/dev/null 2>&1 && echo ${VERSION_ID:-unknown}")
+                detected_version = stdout.read().decode("utf-8", "ignore").strip().strip('"')
+                if not detected_version.startswith(expected_ubuntu):
+                    raise Exception(
+                        f"系统版本不匹配: 当前 {detected_version or 'unknown'}，"
+                        f"需 Ubuntu {expected_ubuntu}（服务器种类: {runtime_mode}）"
+                    )
                 
                 # 🔧 关键修复：将成功的SSH连接赋值给self.ssh_client
                 if self.ssh_client:
@@ -1529,6 +1885,10 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         self.server_config['username'] = self.username_var.get().strip()
         self.server_config['password'] = self.password_var.get()
         self.server_config['key_file'] = self.key_file_var.get().strip()
+        if hasattr(self, 'runtime_mode_var'):
+            self.server_config['runtime_mode'] = self._normalize_runtime_mode(self.runtime_mode_var.get())
+        else:
+            self.server_config['runtime_mode'] = self._normalize_runtime_mode(self.server_config.get('runtime_mode'))
 
         # 2. 更新数据集配置
         self.dataset_config['local_path'] = self.local_path_var.get().strip()

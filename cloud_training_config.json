@@ -1,10 +1,11 @@
 {
   "server": {
-    "hostname": "43.153.152.195",
+    "hostname": "124.156.219.154",
     "port": 22,
-    "username": "root",
+    "username": "ubuntu",
     "password": "Vonzeus01",
-    "key_file": ""
+    "key_file": "",
+    "runtime_mode": "docker_ubuntu2204"
   },
   "dataset": {
     "local_path": "D:/picture/00001/yolo_dataset",
@@ -32,6 +33,16 @@
     "augment_hsv_h_active": false,
     "augment_hsv_s_active": false,
     "augment_hsv_v_active": false
+  },
+  "deploy_docker": {
+    "image_repo": "ultralytics/ultralytics",
+    "image_tag": "latest",
+    "container_name": "cloud_training_runner",
+    "remote_deploy_dir": "/opt/cloud_training/docker_ubuntu2204",
+    "host_workspace_dir": "/root/cloud_training_workspace",
+    "enable_gpu": true,
+    "last_status": "未部署",
+    "last_deploy_time": ""
   },
   "upload": {
     "max_workers": 20,

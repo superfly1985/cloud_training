@@ -1,0 +1,20 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+
+ultralytics==8.4.41
+numpy==1.26.4
+opencv-python==4.7.0.72
+onnx==1.16.1
+onnxsim==0.4.36
+tensorflow==2.19.1
+tf-keras==2.19.0
+onnx2tf==1.28.8
+ai-edge-litert==2.1.4
+protobuf==5.29.5
+h5py==3.12.1
+flatbuffers==25.2.10
+matplotlib==3.8.4
+PyYAML==6.0.2
