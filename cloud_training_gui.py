@@ -15,6 +15,7 @@ import sys
 import threading
 import subprocess
 import re
+import shlex
 import paramiko
 from pathlib import Path
 from datetime import datetime
@@ -42,7 +43,8 @@ class CloudTrainingGUI:
         self.root = root
         self.app_version = "v2.2.10"
         self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
-        self.root.geometry("1200x800")
+        self.root.geometry("1270x900")
+        self.root.minsize(1100, 750)
         self.root.resizable(True, True)
         
         # 配置文件路径
@@ -75,6 +77,8 @@ class CloudTrainingGUI:
             # 图像增强参数
             'augment_scale': 0.5,
             'augment_fliplr': 0.5,
+            'augment_flipud': 0.0,
+            'augment_perspective': 0.0,
             'augment_hsv_h': 0.015,
             'augment_hsv_s': 0.7,
             'augment_hsv_v': 0.4
@@ -94,6 +98,7 @@ class CloudTrainingGUI:
         self.last_upload_plan = None
         self._persistence_bound = False
         self.auto_recommend_running = False
+        self.tflite_conversion_running = False
         
         # SSH客户端
         self.ssh_client = None
@@ -549,6 +554,7 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         main_frame.rowconfigure(0, weight=1)
 
         self.setup_dataset_tab()
+        self.setup_tflite_tab()
         self._bind_persistence()
         
         # 状态栏 (由于已有日志输出，不再显示)
@@ -771,6 +777,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         augment_configs = [
             ("缩放增强:", 'augment_scale', 0.0, 1.0, 0.5),
             ("水平翻转:", 'augment_fliplr', 0.0, 1.0, 0.5),
+            ("垂直翻转:", 'augment_flipud', 0.0, 1.0, 0.0),
+            ("透视变换:", 'augment_perspective', 0.0, 0.001, 0.0),
             ("色调变化:", 'augment_hsv_h', 0.0, 0.1, 0.015),
             ("饱和变化:", 'augment_hsv_s', 0.0, 1.0, 0.7),
             ("亮度变化:", 'augment_hsv_v', 0.0, 1.0, 0.4),
@@ -1122,6 +1130,248 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
 
         ttk.Button(btn_frame, text="保存", command=save_and_close).pack(side='right', padx=(5, 0))
         ttk.Button(btn_frame, text="取消", command=cancel).pack(side='right')
+
+    def setup_tflite_tab(self):
+        """设置独立TFLite转换选项卡（与训练流程解耦）"""
+        tflite_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(tflite_frame, text="TFLite转换")
+        tflite_frame.columnconfigure(0, weight=1)
+        tflite_frame.rowconfigure(3, weight=1)
+
+        tip = (
+            "说明：仅保留原生稳定路线（best.pt -> TFLite）。\n"
+            "1) 先训练得到 best.pt；2) 手动触发转换；3) 转换结果不自动加入训练交付包。"
+        )
+        ttk.Label(tflite_frame, text=tip, foreground="#495057").grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+
+        source_frame = ttk.Labelframe(tflite_frame, text="best.pt输入", padding="10")
+        source_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        source_frame.columnconfigure(1, weight=1)
+        ttk.Label(source_frame, text="远程best.pt路径:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.tflite_source_var = tk.StringVar(value="")
+        ttk.Entry(source_frame, textvariable=self.tflite_source_var).grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(8, 8), pady=2)
+        ttk.Button(source_frame, text="最近训练best.pt", command=self.fill_latest_best_pt_path, bootstyle="info-outline").grid(row=0, column=2, sticky=tk.E, pady=2)
+
+        option_frame = ttk.Labelframe(tflite_frame, text="转换选项", padding="10")
+        option_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        option_frame.columnconfigure(0, weight=1)
+        option_frame.columnconfigure(1, weight=1)
+        self.tflite_status_var = tk.StringVar(value="待转换")
+        ttk.Label(option_frame, textvariable=self.tflite_status_var, foreground="#0d6efd").grid(row=0, column=0, columnspan=2, sticky=tk.E)
+        self.start_tflite_convert_button = ttk.Button(
+            option_frame, text="开始转换", command=self.start_tflite_conversion, bootstyle="success"
+        )
+        self.start_tflite_convert_button.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(8, 0))
+
+        log_frame = ttk.Labelframe(tflite_frame, text="转换日志", padding="10")
+        log_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.tflite_log_text = scrolledtext.ScrolledText(log_frame, height=16, width=80, font=('Consolas', 10))
+        self.tflite_log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+    def _append_tflite_log(self, text):
+        msg = str(text or "").strip()
+        if not msg:
+            return
+        ts = datetime.now().strftime('%H:%M:%S')
+        line = f"[{ts}] {msg}\n"
+        if hasattr(self, "tflite_log_text"):
+            self.tflite_log_text.insert(tk.END, line)
+            self.tflite_log_text.see(tk.END)
+        self.log_message(f"[TFLite] {msg}")
+
+    def _log_tflite_native_result(self, raw_output):
+        payload = str(raw_output or "").strip()
+        if not payload:
+            return None
+        marker_begin = "__TFLITE_RESULT_JSON_BEGIN__"
+        marker_end = "__TFLITE_RESULT_JSON_END__"
+        if marker_begin in payload and marker_end in payload:
+            try:
+                json_part = payload.split(marker_begin, 1)[1].split(marker_end, 1)[0].strip()
+                obj = json.loads(json_part)
+            except Exception:
+                obj = None
+        else:
+            obj = None
+        if obj is None:
+            start = payload.rfind("{")
+            end = payload.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    obj = json.loads(payload[start:end + 1])
+                except Exception:
+                    obj = None
+        if obj is None:
+            head = "\n".join(payload.splitlines()[:12])
+            self._append_tflite_log(f"转换输出(摘要): {head[:900]}")
+            return None
+        self._append_tflite_log(f"转换结果: status={obj.get('status', 'unknown')} msg={obj.get('error_msg', '')}")
+        outputs = obj.get("outputs") or {}
+        for key, value in outputs.items():
+            self._append_tflite_log(f"产物 {key}: {value}")
+        logs = obj.get("logs") or {}
+        if logs.get("ultralytics_version"):
+            self._append_tflite_log(f"Ultralytics版本: {logs.get('ultralytics_version')}")
+        return obj
+
+    def fill_latest_best_pt_path(self):
+        """自动填充最近训练产生的best.pt路径"""
+        def worker():
+            try:
+                self.root.after(0, lambda: self._append_tflite_log("查询最近训练best.pt..."))
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                connect_params = {
+                    'hostname': self.server_config['hostname'],
+                    'port': self.server_config['port'],
+                    'username': self.server_config['username']
+                }
+                if self.server_config['key_file']:
+                    connect_params['key_filename'] = self.server_config['key_file']
+                else:
+                    connect_params['password'] = self.server_config['password']
+                ssh.connect(**connect_params)
+                cmd = "ls -t /root/runs/train/yolo_training_*/weights/best*.pt 2>/dev/null | head -n 1"
+                stdin, stdout, stderr = ssh.exec_command(cmd)
+                path = stdout.read().decode('utf-8', errors='ignore').strip()
+                ssh.close()
+                if not path:
+                    self.root.after(0, lambda: self._append_tflite_log("未找到best.pt，请先完成训练"))
+                    return
+                self.root.after(0, lambda p=path: self.tflite_source_var.set(p))
+                self.root.after(0, lambda p=path: self._append_tflite_log(f"已填充best.pt: {p}"))
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): self._append_tflite_log(f"查询best.pt失败: {err}"))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def start_tflite_conversion(self):
+        """启动独立TFLite转换任务（仅原生best.pt路线）"""
+        if self.tflite_conversion_running:
+            messagebox.showinfo("提示", "TFLite转换正在进行中")
+            return
+        best_pt_path = self.tflite_source_var.get().strip()
+        if not best_pt_path:
+            messagebox.showwarning("提示", "请先填写best.pt路径，或点击“最近训练best.pt”自动填充")
+            return
+
+        def convert_thread():
+            self.tflite_conversion_running = True
+            self.root.after(0, lambda: self.start_tflite_convert_button.configure(state="disabled"))
+            self.root.after(0, lambda: self.tflite_status_var.set("转换中..."))
+            try:
+                self.root.after(0, lambda: self._append_tflite_log("开始独立TFLite转换流程"))
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                connect_params = {
+                    'hostname': self.server_config['hostname'],
+                    'port': self.server_config['port'],
+                    'username': self.server_config['username']
+                }
+                if self.server_config['key_file']:
+                    connect_params['key_filename'] = self.server_config['key_file']
+                else:
+                    connect_params['password'] = self.server_config['password']
+                ssh.connect(**connect_params)
+
+                python_cmd = self.get_python_cmd_with_fallback(ssh)
+                if not python_cmd:
+                    raise RuntimeError("未找到可用Python解释器")
+                self.root.after(0, lambda p=python_cmd: self._append_tflite_log(f"使用Python: {p}"))
+                check_ultra_cmd = f"{python_cmd} -c \"import ultralytics; print(getattr(ultralytics, '__version__', 'unknown'))\""
+                stdin, stdout, stderr = ssh.exec_command(check_ultra_cmd)
+                ultra_ver = stdout.read().decode('utf-8', errors='ignore').strip()
+                ultra_err = stderr.read().decode('utf-8', errors='ignore').strip()
+                ultra_code = stdout.channel.recv_exit_status()
+                if ultra_code != 0:
+                    raise RuntimeError(f"当前Python缺少ultralytics: {ultra_err or 'import失败'}")
+                self.root.after(0, lambda v=ultra_ver: self._append_tflite_log(f"Ultralytics可用: {v}"))
+
+                native_cmd = f"""cd /root && {python_cmd} - <<'PY'
+import glob
+import json
+import os
+import traceback
+from ultralytics import YOLO
+import ultralytics
+
+best_pt = {best_pt_path!r}
+result = {{
+    "status": "failed",
+    "error_msg": "",
+    "outputs": {{}},
+    "logs": {{"ultralytics_version": getattr(ultralytics, "__version__", "unknown")}}
+}}
+try:
+    if not os.path.isfile(best_pt):
+        raise FileNotFoundError(f"best.pt不存在: {{best_pt}}")
+    out_dir = os.path.dirname(best_pt) or "/root"
+    model = YOLO(best_pt)
+    export_ret = model.export(format="tflite", imgsz=640, batch=1)
+    result["logs"]["export_return"] = str(export_ret)
+
+    model_stem = os.path.splitext(os.path.basename(best_pt))[0]
+    saved_model_dir = os.path.splitext(best_pt)[0] + "_saved_model"
+    files = sorted(glob.glob(os.path.join(saved_model_dir, "*.tflite")))
+    files = [f for f in files if model_stem in os.path.basename(f)]
+    if not files:
+        files = sorted(glob.glob(os.path.join(out_dir, "*_saved_model", "*.tflite")))
+        files = [f for f in files if model_stem in os.path.basename(f)]
+    fp32 = None
+    fp16 = None
+    for fp in files:
+        low = os.path.basename(fp).lower()
+        if "float16" in low and fp16 is None:
+            fp16 = fp
+        elif fp32 is None:
+            fp32 = fp
+    if fp32:
+        result["outputs"]["tflite"] = fp32
+        result["outputs"]["tflite_fp32"] = fp32
+    if fp16:
+        result["outputs"]["tflite_fp16"] = fp16
+    if not result["outputs"]:
+        raise RuntimeError("未找到导出的tflite文件")
+    result["status"] = "success"
+except Exception as e:
+    result["error_msg"] = str(e)
+    result["logs"]["traceback"] = traceback.format_exc()[-4000:]
+print("__TFLITE_RESULT_JSON_BEGIN__")
+print(json.dumps(result, ensure_ascii=False))
+print("__TFLITE_RESULT_JSON_END__")
+PY"""
+                stdin, stdout, stderr = ssh.exec_command(native_cmd)
+                conv_out = stdout.read().decode('utf-8', errors='ignore').strip()
+                conv_err = stderr.read().decode('utf-8', errors='ignore').strip()
+                conv_code = stdout.channel.recv_exit_status()
+                obj = None
+                if conv_out:
+                    obj = self._log_tflite_native_result(conv_out)
+                if conv_err:
+                    self.root.after(0, lambda e=conv_err[-800:]: self._append_tflite_log(f"转换stderr摘要: {e}"))
+                if conv_code != 0:
+                    raise RuntimeError("原生转换进程执行失败")
+                if not isinstance(obj, dict):
+                    raise RuntimeError("转换结果不可解析")
+                if obj.get("status") != "success":
+                    raise RuntimeError(obj.get("error_msg") or "原生转换失败")
+                outputs = obj.get("outputs") or {}
+                fp32 = outputs.get("tflite_fp32") or outputs.get("tflite")
+                fp16 = outputs.get("tflite_fp16")
+                if fp32:
+                    self.root.after(0, lambda p=fp32: self._append_tflite_log(f"✓ 转换成功(fp32): {p}"))
+                if fp16:
+                    self.root.after(0, lambda p=fp16: self._append_tflite_log(f"✓ 转换成功(fp16): {p}"))
+                self.root.after(0, lambda: self.tflite_status_var.set("转换完成"))
+                ssh.close()
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): self._append_tflite_log(f"✗ 转换失败: {err}"))
+                self.root.after(0, lambda: self.tflite_status_var.set("转换失败"))
+            finally:
+                self.tflite_conversion_running = False
+                self.root.after(0, lambda: self.start_tflite_convert_button.configure(state="normal"))
+        threading.Thread(target=convert_thread, daemon=True).start()
     
     def setup_training_tab(self):
         """设置训练监控选项卡"""
@@ -1564,6 +1814,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         # 4. 更新图像增强参数（滑块值 + 激活状态）
         self.training_config['augment_scale'] = self.augment_scale_var.get()
         self.training_config['augment_fliplr'] = self.augment_fliplr_var.get()
+        self.training_config['augment_flipud'] = self.augment_flipud_var.get()
+        self.training_config['augment_perspective'] = self.augment_perspective_var.get()
         self.training_config['augment_hsv_h'] = self.augment_hsv_h_var.get()
         self.training_config['augment_hsv_s'] = self.augment_hsv_s_var.get()
         self.training_config['augment_hsv_v'] = self.augment_hsv_v_var.get()
@@ -1571,6 +1823,8 @@ print(json.dumps({{"ok": True, "files": out}}, ensure_ascii=False))"""
         # 5. 更新图像增强激活状态
         self.training_config['augment_scale_active'] = self.augment_active_vars['augment_scale'].get()
         self.training_config['augment_fliplr_active'] = self.augment_active_vars['augment_fliplr'].get()
+        self.training_config['augment_flipud_active'] = self.augment_active_vars['augment_flipud'].get()
+        self.training_config['augment_perspective_active'] = self.augment_active_vars['augment_perspective'].get()
         self.training_config['augment_hsv_h_active'] = self.augment_active_vars['augment_hsv_h'].get()
         self.training_config['augment_hsv_s_active'] = self.augment_active_vars['augment_hsv_s'].get()
         self.training_config['augment_hsv_v_active'] = self.augment_active_vars['augment_hsv_v'].get()
@@ -3719,12 +3973,16 @@ PY"""
         # 图像增强参数
         augment_scale = self.training_config.get('augment_scale', 0.5)
         augment_fliplr = self.training_config.get('augment_fliplr', 0.5)
+        augment_flipud = self.training_config.get('augment_flipud', 0.0)
+        augment_perspective = self.training_config.get('augment_perspective', 0.0)
         augment_hsv_h = self.training_config.get('augment_hsv_h', 0.015)
         augment_hsv_s = self.training_config.get('augment_hsv_s', 0.7)
         augment_hsv_v = self.training_config.get('augment_hsv_v', 0.4)
         # 图像增强激活状态
         augment_scale_active = self.training_config.get('augment_scale_active', True)
         augment_fliplr_active = self.training_config.get('augment_fliplr_active', True)
+        augment_flipud_active = self.training_config.get('augment_flipud_active', True)
+        augment_perspective_active = self.training_config.get('augment_perspective_active', True)
         augment_hsv_h_active = self.training_config.get('augment_hsv_h_active', True)
         augment_hsv_s_active = self.training_config.get('augment_hsv_s_active', True)
         augment_hsv_v_active = self.training_config.get('augment_hsv_v_active', True)
@@ -3737,7 +3995,7 @@ PY"""
 类别数: {num_classes}
 生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 训练参数: epochs={epochs}, batch={batch_size}, lr={learning_rate}
-增强参数: scale={augment_scale}, fliplr={augment_fliplr}, hsv_h={augment_hsv_h}, hsv_s={augment_hsv_s}, hsv_v={augment_hsv_v}
+增强参数: scale={augment_scale}, fliplr={augment_fliplr}, flipud={augment_flipud}, perspective={augment_perspective}, hsv_h={augment_hsv_h}, hsv_s={augment_hsv_s}, hsv_v={augment_hsv_v}
 """
 
 import os
@@ -3747,7 +4005,6 @@ os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
 os.environ["YOLO_AUTOINSTALL"] = "0"
 os.environ["ULTRALYTICS_AUTOINSTALL"] = "0"
 import torch
-import tensorflow as tf
 import yaml
 import json
 import re
@@ -3869,6 +4126,10 @@ def main():
             augment_kwargs['scale'] = {augment_scale}
         if {augment_fliplr_active}:
             augment_kwargs['fliplr'] = {augment_fliplr}
+        if {augment_flipud_active}:
+            augment_kwargs['flipud'] = {augment_flipud}
+        if {augment_perspective_active}:
+            augment_kwargs['perspective'] = {augment_perspective}
         if {augment_hsv_h_active}:
             augment_kwargs['hsv_h'] = {augment_hsv_h}
         if {augment_hsv_s_active}:
@@ -3960,7 +4221,7 @@ def main():
         best_pt = renamed_best
         logger.info(f"best.pt已重命名: {{best_pt}}")
 
-        export_status = {{"onnx": False, "tflite": False}}
+        export_status = {{"onnx": False}}
         export_outputs = {{}}
         export_model = YOLO(best_pt)
         common_export_kwargs = {{
@@ -3970,36 +4231,7 @@ def main():
             "simplify": False
         }}
 
-        def normalize_saved_model_dir(saved_out):
-            saved_dir = str(saved_out)
-            if saved_dir.endswith('.pb'):
-                saved_dir = os.path.dirname(saved_dir)
-            if not os.path.isdir(saved_dir):
-                raise Exception(f"未找到SavedModel目录: {{saved_dir}}")
-            return saved_dir
-
-        def export_tflite_pair_from_saved_model(saved_dir):
-            stem = os.path.splitext(os.path.basename(best_pt))[0]
-            out_dir = os.path.dirname(best_pt)
-            fp32_path = os.path.join(out_dir, f"{{stem}}_float32.tflite")
-            fp16_path = os.path.join(out_dir, f"{{stem}}_float16.tflite")
-
-            converter32 = tf.lite.TFLiteConverter.from_saved_model(saved_dir)
-            converter32.experimental_new_converter = True
-            tflite32 = converter32.convert()
-            with open(fp32_path, "wb") as f:
-                f.write(tflite32)
-
-            converter16 = tf.lite.TFLiteConverter.from_saved_model(saved_dir)
-            converter16.experimental_new_converter = True
-            converter16.optimizations = [tf.lite.Optimize.DEFAULT]
-            converter16.target_spec.supported_types = [tf.float16]
-            tflite16 = converter16.convert()
-            with open(fp16_path, "wb") as f:
-                f.write(tflite16)
-            return fp32_path, fp16_path
-
-        for fmt in ["onnx", "tflite"]:
+        for fmt in ["onnx"]:
             try:
                 logger.info(f"开始导出格式: {{fmt}}")
                 if fmt == "onnx":
@@ -4007,49 +4239,14 @@ def main():
                     export_status[fmt] = True
                     export_outputs[fmt] = str(out)
                     logger.info(f"{{fmt}}导出成功: {{out}}")
-                else:
-                    # tflite 目标：稳定产出 FP32 + FP16；导出阶段强制CPU规避GPU侧偶发转换异常
-                    tflite_rounds = 3
-                    tflite_last_err = None
-                    for round_idx in range(1, tflite_rounds + 1):
-                        logger.info(f"tflite导出第{{round_idx}}/{{tflite_rounds}}轮...")
-                        prev_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-                        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-                        try:
-                            saved_out = export_model.export(format="saved_model", **common_export_kwargs)
-                            saved_dir = normalize_saved_model_dir(saved_out)
-                            fp32_path, fp16_path = export_tflite_pair_from_saved_model(saved_dir)
-                            export_status[fmt] = True
-                            export_outputs["tflite"] = fp32_path
-                            export_outputs["tflite_fp32"] = fp32_path
-                            export_outputs["tflite_fp16"] = fp16_path
-                            logger.info(f"tflite导出成功(fp32): {{fp32_path}}")
-                            logger.info(f"tflite导出成功(fp16): {{fp16_path}}")
-                            break
-                        except Exception as round_err:
-                            tflite_last_err = round_err
-                            logger.warning(f"tflite导出第{{round_idx}}轮失败: {{round_err}}")
-                            if round_idx < tflite_rounds:
-                                wait_sec = round_idx * 3
-                                logger.info(f"等待{{wait_sec}}秒后重试tflite导出...")
-                                time.sleep(wait_sec)
-                        finally:
-                            if prev_cuda_visible is None:
-                                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-                            else:
-                                os.environ["CUDA_VISIBLE_DEVICES"] = prev_cuda_visible
-                    if not export_status[fmt]:
-                        raise Exception(f"tflite多轮重试失败: {{tflite_last_err}}")
             except Exception as export_err:
                 export_outputs[fmt] = f"ERROR: {{export_err}}"
                 logger.error(f"{{fmt}}导出失败: {{export_err}}")
 
         logger.info("导出结果: " + json.dumps({{"status": export_status, "outputs": export_outputs}}, ensure_ascii=False))
-        # 导出成功判定：ONNX为必需，TFLite为可选（失败仅告警，不中断训练与打包）
+        # 导出成功判定：训练流程仅要求ONNX
         if not export_status.get("onnx", False):
             raise Exception(f"导出失败: {{export_status}}")
-        if not export_status.get("tflite", False):
-            logger.warning("tflite导出失败（可选项），已继续执行并保留pt/onnx与完整zip打包")
         
         # 训练产物统一打包：ZIP名=命名_时间戳，ZIP内文件统一追加同一尾缀
         def get_dataset_class_label(yaml_file):
@@ -4669,7 +4866,7 @@ print(json.dumps(res, ensure_ascii=False))"""
             threading.Thread(target=clean_thread, daemon=True).start()
 
     def _get_env_spec(self):
-        """环境单一规则源：检查、修复、训练前门禁全部复用"""
+        """训练环境规则源：检查、修复、训练前门禁复用（不包含TFLite转换依赖）"""
         return {
             "system_packages": ["libgl1-mesa-glx", "libglib2.0-0", "libusb-1.0-0"],
             "python_packages": [
@@ -4682,25 +4879,13 @@ print(json.dumps(res, ensure_ascii=False))"""
                 {"name": "matplotlib", "pip": "matplotlib", "import_cmd": "import matplotlib; print(matplotlib.__version__)"},
                 {"name": "onnx", "pip": "onnx==1.16.1", "import_cmd": "import onnx; print(onnx.__version__)", "exact_ver": "1.16.1"},
                 {"name": "onnxsim", "pip": "onnxsim", "import_cmd": "import onnxsim; print(onnxsim.__version__)"},
-                # onnx2tf 在新版本链路中依赖 ai_edge_litert
-                {"name": "ai_edge_litert", "pip": "ai-edge-litert", "import_cmd": "import ai_edge_litert; print(getattr(ai_edge_litert, '__version__', 'OK'))"},
-                # onnx2tf 在 TensorFlow 2.19 环境下通常还需要独立的 tf_keras 包
-                {"name": "tf_keras", "pip": "tf-keras>=2.19,<2.20", "import_cmd": "import tf_keras; print(getattr(tf_keras, '__version__', 'OK'))", "min_ver": "2.19.0", "max_ver": "2.20.0"},
-                {"name": "onnx2tf", "pip": "onnx2tf>=1.28.8,<1.29", "import_cmd": "import onnx2tf; print(getattr(onnx2tf, '__version__', 'OK'))", "min_ver": "1.28.8", "max_ver": "1.29.0"},
-                {"name": "sng4onnx", "pip": "sng4onnx>=1.0.1", "import_cmd": "import sng4onnx; print(getattr(sng4onnx, '__version__', 'OK'))"},
-                {"name": "onnx_graphsurgeon", "pip": "onnx_graphsurgeon>=0.3.26", "import_cmd": "import onnx_graphsurgeon as gs; print(getattr(gs, '__version__', 'OK'))"},
-                # 当前云端镜像下 tflite_support 与部分 TF 组合存在 pybind 冲突，先降级为可选依赖
-                {"name": "tflite_support", "pip": "tflite_support", "import_cmd": "import tflite_support; print(getattr(tflite_support, '__version__', 'OK'))", "optional": True},
                 {"name": "onnxruntime", "pip": "onnxruntime-gpu", "import_cmd": "import onnxruntime as ort; print(ort.__version__)"},
                 {"name": "flatbuffers", "pip": "flatbuffers", "import_cmd": "import flatbuffers; print(getattr(flatbuffers, '__version__', 'OK'))"},
-                # Ultralytics 导出链要求 protobuf>=5；TensorFlow 2.19 要求 protobuf<6
                 {"name": "protobuf", "pip": "protobuf>=5,<6", "import_cmd": "from google.protobuf import __version__ as v; print(v)", "min_ver": "5.0.0", "max_ver": "6.0.0"},
                 {"name": "h5py", "pip": "h5py", "import_cmd": "import h5py; print(h5py.__version__)"},
-                {"name": "tensorflow", "pip": "tensorflow>=2.19,<2.20", "import_cmd": "import tensorflow as tf; print(tf.__version__)", "min_ver": "2.19.0", "max_ver": "2.20.0"},
             ],
             "system_libs": [
                 {"name": "libGL.so.1", "check_cmd": "ldconfig -p | grep libGL.so.1", "hint": "OpenCV需要", "fix_pkg": "libgl1-mesa-glx"},
-                {"name": "libusb-1.0.so.0", "check_cmd": "ldconfig -p | grep libusb-1.0.so.0", "hint": "tflite_support需要", "fix_pkg": "libusb-1.0-0"},
             ],
         }
 
@@ -5377,7 +5562,6 @@ else:
                 else:
                     self.root.after(0, lambda: self.log_message("✗ 训练脚本上传失败"))
                     return
-
                 stdin, stdout, stderr = ssh.exec_command("grep -nE 'epochs=|batch=|lr0=|imgsz=' /root/training_script.py")
                 script_param_lines = stdout.read().decode('utf-8', errors='ignore')
                 expected_tokens = [

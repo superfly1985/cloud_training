@@ -1,6 +1,6 @@
 {
   "server": {
-    "hostname": "43.153.152.195",
+    "hostname": "43.167.240.108",
     "port": 22,
     "username": "root",
     "password": "Vonzeus01",
@@ -24,14 +24,18 @@
     "model_name_suffix": "测试训练",
     "augment_scale": 0.376,
     "augment_fliplr": 0.183,
+    "augment_flipud": 0.0,
+    "augment_perspective": 0.001,
     "augment_hsv_h": 0.014,
     "augment_hsv_s": 0.527,
     "augment_hsv_v": 0.344,
     "augment_scale_active": true,
-    "augment_fliplr_active": false,
+    "augment_fliplr_active": true,
     "augment_hsv_h_active": false,
     "augment_hsv_s_active": false,
-    "augment_hsv_v_active": false
+    "augment_hsv_v_active": false,
+    "augment_flipud_active": false,
+    "augment_perspective_active": true
   },
   "upload": {
     "max_workers": 20,
