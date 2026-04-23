@@ -41,8 +41,8 @@ plt.rcParams['axes.unicode_minus'] = False
 class CloudTrainingGUI:
     def __init__(self, root):
         self.root = root
-        self.app_version = "v2.2.10"
-        self.root.title(f"云端训练脚本优化管理平台 {self.app_version}")
+        self.app_version = "v3.0.0"
+        self.root.title(f"云端训练管理平台 {self.app_version}")
         self.root.geometry("1270x900")
         self.root.minsize(1100, 750)
         self.root.resizable(True, True)
