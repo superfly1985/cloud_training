@@ -1,44 +1,54 @@
 {
-  "server": {
-    "hostname": "43.167.240.108",
-    "port": 22,
-    "username": "root",
-    "password": "Vonzeus01",
-    "key_file": ""
-  },
-  "dataset": {
-    "local_path": "D:/picture/00001/yolo_dataset",
-    "remote_path": "/root/yolo_dataset",
-    "dataset_name": "yolo_dataset",
-    "classes": [
-      "0: 焊点漏包"
-    ],
-    "num_classes": 1
-  },
-  "training": {
-    "epochs": 30,
-    "batch_size": 32,
-    "learning_rate": 0.02,
-    "image_size": 640,
-    "base_model": "yolov8n.pt",
-    "model_name_suffix": "测试训练",
-    "augment_scale": 0.376,
-    "augment_fliplr": 0.183,
-    "augment_flipud": 0.0,
-    "augment_perspective": 0.001,
-    "augment_hsv_h": 0.014,
-    "augment_hsv_s": 0.527,
-    "augment_hsv_v": 0.344,
-    "augment_scale_active": true,
-    "augment_fliplr_active": true,
-    "augment_hsv_h_active": false,
-    "augment_hsv_s_active": false,
-    "augment_hsv_v_active": false,
-    "augment_flipud_active": false,
-    "augment_perspective_active": true
-  },
-  "upload": {
-    "max_workers": 20,
-    "retry_times": 3
-  }
+    "server": {
+        "hostname": "43.167.225.176",
+        "port": 22,
+        "username": "root",
+        "password": "Vonzeus01",
+        "key_file": ""
+    },
+    "dataset": {
+        "local_path": "D:/picture/00001/yolo_dataset",
+        "remote_path": "/root/yolo_dataset",
+        "dataset_name": "yolo_dataset",
+        "classes": [
+            "0: 焊点漏包"
+        ],
+        "num_classes": 1
+    },
+    "training": {
+        "epochs": 60,
+        "batch_size": 32,
+        "learning_rate": 0.02,
+        "image_size": 640,
+        "base_model": "yolov8n.pt",
+        "model_name_suffix": "第二次训练",
+        "augment_scale": 0.376,
+        "augment_fliplr": 0.183,
+        "augment_flipud": 0.281,
+        "augment_perspective": 0.001,
+        "augment_hsv_h": 0.014,
+        "augment_hsv_s": 0.527,
+        "augment_hsv_v": 0.344,
+        "augment_scale_active": true,
+        "augment_fliplr_active": true,
+        "augment_hsv_h_active": false,
+        "augment_hsv_s_active": false,
+        "augment_hsv_v_active": false,
+        "augment_flipud_active": false,
+        "augment_perspective_active": true
+    },
+    "ui": {
+        "window_width": 1667,
+        "window_height": 1042,
+        "window_state": "normal",
+        "window_x": 273,
+        "window_y": 0
+    },
+    "convert": {
+        "python_export_cmd": "/root/miniforge3/bin/python3"
+    },
+    "upload": {
+        "max_workers": 20,
+        "retry_times": 3
+    }
 }

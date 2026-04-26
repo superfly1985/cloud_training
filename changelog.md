@@ -1,5 +1,127 @@
 # 更新日志
 
+## v3.0.3 (2026-04-24)
+
+### 摘要
+- **Loss曲线链路修复**：修复 `results.csv` 备用解析分支作用域问题与静默异常导致的“不绘制”问题
+- **界面流畅度优化**：将周期性远程采集从主线程迁移到后台线程，缓解“每几秒卡一下”
+- **稳定性提升**：统一主路径/备选路径的 CSV 解析逻辑，并补充并发保护避免采集堆积
+
+### 详细变更
+- **Loss 曲线读取与解析（`main_v3.py`）**
+  - 重构 `refresh_chart_loop`：主路径和 fallback 路径统一走同一解析函数
+  - 修复 fallback 分支中 `pd/io` 作用域问题（此前会触发异常但被吞掉）
+  - 去除 `except: pass` 静默吞异常路径，改为显式解析失败返回
+  - 解析方式调整为内置 `csv`，降低环境依赖并增强兼容性
+  - 兼容列名差异与空值：`epoch` / `train/box_loss` / `train/cls_loss` / `train/dfl_loss`
+
+- **UI 卡顿优化（`main_v3.py`）**
+  - 系统监控采集改为后台线程执行，主线程仅回填 UI
+  - Loss 刷新中的远程读取与 CSV 解析改为后台线程执行
+  - 新增采集并发保护标记：避免上一轮未结束时重复发起请求导致卡顿
+  - 保持 Tk 主线程仅处理 `root.after` UI 更新，降低事件循环阻塞风险
+
+- **代码质量**
+  - 修复 `main_v3.py` 缩进问题并清理未使用变量
+  - 诊断校验通过：`GetDiagnostics` 无错误
+
+### 版本升级
+- v3.0.2 → v3.0.3（稳定性与交互流畅度优化）
+
+---
+
+## v3.0.2 (2026-04-24)
+
+### 摘要
+- **业务逻辑全量抽离落地**：`main_v3.py` 收敛为编排层，核心能力下沉至 `src/core` 管理器
+- **功能闭环补齐**：补全并接线所有新UI入口（选择/上传/清空训练集、修复环境、TFLite转换、文件管理、全屏监控）
+- **底座能力增强**：扩展服务器文件操作与连接保障能力，打通训练集传输、模型下载、远程文件管理链路
+
+### 详细变更
+- **主流程编排层重构（`main_v3.py`）**
+  - 统一初始化并注入管理器：`EnvironmentManager`、`NetworkMonitorManager`、`ModelManager`、`FileManagerManager`
+  - 全量按钮事件绑定完成：`btn_select_dataset`、`btn_clear_dataset`、`btn_fix_env`、`btn_convert_tflite`、`btn_file_manager`、`btn_fullscreen_monitor`
+  - 连接状态、异步任务、UI回填流程统一，主文件职责聚焦为“事件编排 + 状态呈现”
+
+- **新增核心管理器**
+  - `src/core/environment_manager.py`
+    - 新增环境检查：Python/CUDA 可用性检查
+    - 新增环境修复：最小依赖安装流程（pip/ultralytics）
+  - `src/core/network_monitor_manager.py`
+    - 从 `main_v3.py` 抽离 Ping/丢包率采样与解析逻辑
+  - `src/core/model_manager.py`
+    - 新增最新 `best.pt` 自动检索
+    - 新增模型下载到本地目录
+    - 新增一键导出 TFLite
+  - `src/core/file_manager_manager.py`
+    - 新增远程文件列表与删除业务封装
+
+- **现有管理器增强**
+  - `src/core/server_manager.py`
+    - 修复并统一连接保障流程（`ensure_connected`）
+    - `execute_command` 按退出码返回结果，错误信息更可靠
+    - 新增远程目录操作：`ensure_remote_dir`、`list_remote_dir`、`remove_remote_path`
+    - 新增递归上传目录能力：`upload_dir`
+    - 保留并增强单文件上传/下载能力
+  - `src/core/dataset_manager.py`
+    - 新增类别推断：`parse_classes_from_labels`
+    - 新增数据集传输接口：`upload_dataset`
+    - 新增远端清空接口：`clear_remote_dataset`
+  - `src/core/training_manager.py`
+    - 训练参数读取与当前 `ConfigManager.training_config` 结构统一
+    - 新增模型名构建方法，训练入口改为无参编排调用
+    - 训练脚本生成改为基于远端数据集路径
+
+- **功能实装（新UI）**
+  - 训练集：选择本地目录、检查、上传（含进度）、清空远端目录全部可用
+  - 环境：检查与修复链路可用
+  - 模型：下载最新训练产物、TFLite转换可用
+  - 文件管理：提供远端目录浏览与删除（MVP）
+  - 全屏监控：提供独立监控窗口与定时刷新（MVP）
+
+- **文档与质量保障**
+  - 更新业务抽离文档：`docs/开发文档/新UI_业务逻辑抽离清单_20260424.md` 为“已实装”状态
+  - 完成代码诊断与语法校验：`GetDiagnostics` 无新增错误，`py_compile` 通过
+
+### 版本升级
+- v3.0.1 → v3.0.2 (功能增强与架构收敛)
+
+---
+
+## v3.0.1 (2026-04-23)
+
+### 摘要
+- **UI细节优化**：改善可读性和布局紧凑性
+- **新增功能**：添加垂直翻转和透视变换增强参数
+- **控件升级**：类别列表改为Treeview，支持滚动和扩展
+
+### 详细变更
+- **服务器设置区域**
+  - 状态信息改为双列布局（主机名|操作系统、CPU|GPU、内存|磁盘、Ping|连接状态）
+  - 节省约88像素纵向空间
+  - 添加连接状态图标（待完善）
+
+- **图像增强区域**
+  - 新增垂直翻转(flipud)和透视变换(perspective)参数
+  - 标签字体从9增大到11，数值字体从9增大到10
+  - 行间距从pady=2增加到pady=5，改善可读性
+
+- **数据集信息区域**
+  - 类别列表从Text控件改为Treeview（序号|类别名称）
+  - 类别数改为只读文本，与图片数同行显示
+  - 布局顺序：类别数 → 本地图片数 → 云端图片数
+
+- **系统监控区域**
+  - 添加监控大屏按钮（⛶图标）
+
+- **按钮样式**
+  - 服务器设置区域三个按钮宽度统一为8
+
+### 版本升级
+- v3.0.0 → v3.0.1 (小版本更新)
+
+---
+
 ## v3.0.0 (2026-04-22)
 
 ### 摘要
