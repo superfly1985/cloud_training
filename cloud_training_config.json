@@ -1,6 +1,6 @@
 {
     "server": {
-        "hostname": "43.167.225.176",
+        "hostname": "43.153.180.108",
         "port": 22,
         "username": "root",
         "password": "Vonzeus01",
@@ -16,19 +16,19 @@
         "num_classes": 1
     },
     "training": {
-        "epochs": 60,
+        "epochs": 300,
         "batch_size": 32,
         "learning_rate": 0.02,
         "image_size": 640,
         "base_model": "yolov8n.pt",
-        "model_name_suffix": "第二次训练",
-        "augment_scale": 0.376,
+        "model_name_suffix": "请输入模型名称",
+        "augment_scale": 0.338,
         "augment_fliplr": 0.183,
-        "augment_flipud": 0.281,
-        "augment_perspective": 0.001,
-        "augment_hsv_h": 0.014,
-        "augment_hsv_s": 0.527,
-        "augment_hsv_v": 0.344,
+        "augment_flipud": 0.163,
+        "augment_perspective": 0.204,
+        "augment_hsv_h": 0.018,
+        "augment_hsv_s": 0.167,
+        "augment_hsv_v": 0.179,
         "augment_scale_active": true,
         "augment_fliplr_active": true,
         "augment_hsv_h_active": false,
@@ -38,11 +38,11 @@
         "augment_perspective_active": true
     },
     "ui": {
-        "window_width": 1667,
-        "window_height": 1042,
+        "window_width": 1250,
+        "window_height": 850,
         "window_state": "normal",
-        "window_x": 273,
-        "window_y": 0
+        "window_x": 196,
+        "window_y": 89
     },
     "convert": {
         "python_export_cmd": "/root/miniforge3/bin/python3"

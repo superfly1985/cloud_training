@@ -55,16 +55,30 @@ class MonitorWindow:
         self.win.title("训练监控大屏")
         self.win.geometry("1380x840")
         self.win.transient(parent)
+        try:
+            self.win.attributes("-topmost", True)
+        except Exception:
+            pass
         self.win.grab_set()
+        self.win.focus_force()
 
         self._set_window_position()
+        self.win.after(0, self._set_window_position)
         self._create_ui()
         self.win.protocol("WM_DELETE_WINDOW", self._on_close)
         self.refresh()
 
     def _set_window_position(self):
-        x = self.parent.winfo_rootx() + 40
-        y = self.parent.winfo_rooty() + 30
+        self.parent.update_idletasks()
+        self.win.update_idletasks()
+        parent_w = self.parent.winfo_width()
+        parent_h = self.parent.winfo_height()
+        parent_x = self.parent.winfo_rootx()
+        parent_y = self.parent.winfo_rooty()
+        win_w = self.win.winfo_width() or self.win.winfo_reqwidth()
+        win_h = self.win.winfo_height() or self.win.winfo_reqheight()
+        x = parent_x + max(0, (parent_w - win_w) // 2)
+        y = parent_y + max(0, (parent_h - win_h) // 2)
         self.win.geometry(f"+{x}+{y}")
 
     def _create_ui(self):
@@ -270,7 +284,8 @@ class MonitorWindow:
         self.eta_var.set(eta_text)
 
     def _draw_gpu_util_chart(self):
-        self.ax_gpu_util.clear()
+        self.fig_gpu_util.clear()
+        self.ax_gpu_util = self.fig_gpu_util.add_subplot(111)
         self.ax_gpu_util.set_ylabel("利用率 (%)", fontsize=10)
         self.ax_gpu_util.set_ylim(0, 100)
         self.ax_gpu_util.grid(True, alpha=0.3)
@@ -284,7 +299,8 @@ class MonitorWindow:
         self.canvas_gpu_util.draw()
 
     def _draw_gpu_mem_chart(self):
-        self.ax_gpu_mem.clear()
+        self.fig_gpu_mem.clear()
+        self.ax_gpu_mem = self.fig_gpu_mem.add_subplot(111)
         self.ax_gpu_mem.set_ylabel("使用率 (%)", fontsize=10)
         self.ax_gpu_mem.set_ylim(0, 100)
         self.ax_gpu_mem.grid(True, alpha=0.3)
@@ -434,7 +450,8 @@ class MonitorWindow:
         return vis_x, vis_box, vis_cls, vis_dfl
 
     def _draw_loss_chart(self):
-        self.ax_loss.clear()
+        self.fig_loss.clear()
+        self.ax_loss = self.fig_loss.add_subplot(111)
         self.ax_loss.set_xlabel("Epoch", fontsize=10)
         self.ax_loss.set_ylabel("Loss", fontsize=10)
         self.ax_loss.grid(True, alpha=0.3)
@@ -694,6 +711,10 @@ class MonitorWindow:
                 pass
             self.after_id = None
         if self.exists():
+            try:
+                self.win.grab_release()
+            except Exception:
+                pass
             self.win.destroy()
 
     def lift(self):

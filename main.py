@@ -71,10 +71,14 @@ class Application:
         self._training_running = False
         self._training_stop_requested = False
         self._remote_file_window = None
+        self._model_list_window = None
         self._last_dataset_fp = ""
         self._dataset_ready = False
         self._autosave_after_id = None
         self._is_loading_config = False
+        self._active_server_operation = None
+        self._active_server_operation_label = ""
+        self._server_op_prev_states = {}
         self._apply_connection_state("disconnected")
         self.ui.update_status_bar_network("--", "--")
         
@@ -152,6 +156,77 @@ class Application:
                 h = self.root.winfo_height()
                 self.ui.status_window_size_var.set(f"{w} x {h} (最大化)")
             self._schedule_auto_save(delay_ms=1200)
+
+    def _center_child_window(self, child_win):
+        """将子窗口默认居中到主窗口中心。"""
+        if child_win is None:
+            return
+        self.root.update_idletasks()
+        child_win.update_idletasks()
+        parent_w = self.root.winfo_width()
+        parent_h = self.root.winfo_height()
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        child_w = child_win.winfo_width() or child_win.winfo_reqwidth()
+        child_h = child_win.winfo_height() or child_win.winfo_reqheight()
+        x = parent_x + max(0, (parent_w - child_w) // 2)
+        y = parent_y + max(0, (parent_h - child_h) // 2)
+        child_win.geometry(f"+{x}+{y}")
+
+    def _begin_server_operation(self, op_key, op_label):
+        """进入服务器操作互锁区，防止高风险操作并发。"""
+        if self._active_server_operation and self._active_server_operation != op_key:
+            self.ui.log_message(
+                f"当前正在执行[{self._active_server_operation_label}]，请等待完成后再执行[{op_label}]。"
+            )
+            return False
+        if self._active_server_operation == op_key:
+            return True
+        self._active_server_operation = op_key
+        self._active_server_operation_label = op_label
+        self._server_op_prev_states = {}
+        lock_btns = [
+            "btn_test_connection",
+            "btn_file_manager",
+            "btn_select_dataset",
+            "btn_upload_dataset",
+            "btn_clear_dataset",
+            "btn_check_env",
+            "btn_fix_env",
+            "btn_download_model",
+            "btn_start_training",
+        ]
+        for btn_name in lock_btns:
+            if op_key == "training" and btn_name == "btn_start_training":
+                continue
+            btn = getattr(self.ui, btn_name, None)
+            if btn is None:
+                continue
+            try:
+                self._server_op_prev_states[btn_name] = str(btn.cget("state"))
+                btn.config(state="disabled")
+            except Exception:
+                continue
+        return True
+
+    def _end_server_operation(self, op_key):
+        """退出服务器操作互锁区并恢复按钮状态。"""
+        if self._active_server_operation != op_key:
+            return
+        prev = dict(self._server_op_prev_states)
+        self._active_server_operation = None
+        self._active_server_operation_label = ""
+        self._server_op_prev_states = {}
+        for btn_name, state in prev.items():
+            btn = getattr(self.ui, btn_name, None)
+            if btn is None:
+                continue
+            try:
+                btn.config(state=state)
+            except Exception:
+                continue
+        self._set_operational_buttons_enabled(self.server_manager.is_connected)
+        self._refresh_start_training_button_state()
 
     def _setup_log_tags(self):
         """初始化日志颜色标签"""
@@ -535,28 +610,14 @@ class Application:
 
         self.root.after(0, update_ui)
 
-    def _save_config(self):
-        """保存配置"""
-        try:
-            self._update_config_from_ui()
-            success, msg = self.config_manager.save_config()
-            if success:
-                messagebox.showinfo("成功", "所有配置已保存")
-                self.ui.log_message("配置已保存")
-            else:
-                messagebox.showerror("错误", msg)
-                self.ui.log_message(msg)
-        except Exception as e:
-            err = f"保存配置时发生错误: {str(e)}"
-            messagebox.showerror("错误", err)
-            self.ui.log_message(err)
-
     def _connect_server(self):
         """异步连接服务器"""
         try:
             self._update_config_from_ui()
         except ValueError:
             messagebox.showerror("参数错误", "端口必须是整数")
+            return
+        if not self._begin_server_operation("connect_server", "连接服务器"):
             return
 
         self.ui.log_message("正在连接服务器...")
@@ -613,6 +674,7 @@ class Application:
     def _on_connect_result(self, success, msg):
         """服务器连接结果处理"""
         self.ui.btn_test_connection.config(state="normal")
+        self._end_server_operation("connect_server")
         if success:
             self.ui.log_message("服务器连接成功！")
             self._apply_connection_state("connected")
@@ -647,6 +709,9 @@ class Application:
 
     def _check_environment(self):
         """检查环境（深度复刻原版显示格式）"""
+        if not self._begin_server_operation("check_environment", "检查环境"):
+            return
+
         def run_check():
             self.ui.log_message("=" * 60)
             self.ui.log_message("开始检查云端环境...")
@@ -665,6 +730,7 @@ class Application:
                     self.ui.btn_fix_env.config(state="disabled")
                     self._env_check_passed = True
                 self.ui.log_message("=" * 60)
+                self._end_server_operation("check_environment")
             
             self.root.after(0, finish)
             
@@ -672,6 +738,8 @@ class Application:
 
     def _fix_environment(self):
         """修复环境（深度复刻原版显示格式）"""
+        if not self._begin_server_operation("fix_environment", "修复环境"):
+            return
         self.ui.btn_fix_env.config(state="disabled")
         
         def run_fix():
@@ -694,6 +762,7 @@ class Application:
                     self.ui.log_message("=" * 60)
                     self.ui.btn_fix_env.config(state="normal")
                     self._env_check_passed = False
+                self._end_server_operation("fix_environment")
             
             self.root.after(0, finish)
 
@@ -727,82 +796,88 @@ class Application:
         if class_count is not None:
             self.ui.num_classes_var.set(str(int(class_count)))
 
-    def _check_dataset(self):
+    def _check_dataset(self, _from_locked=False):
         """检查数据集（增加指纹识别）"""
-        dataset_path = self.ui.dataset_path_var.get()
-        if not dataset_path:
-            self.ui.log_message("请设置数据集路径")
-            self._sync_dataset_count_labels(local_count=None, remote_count=None, class_count=None)
-            self._set_dataset_ready(False)
+        if not _from_locked and not self._begin_server_operation("check_dataset", "检查数据集"):
             return
+        try:
+            dataset_path = self.ui.dataset_path_var.get()
+            if not dataset_path:
+                self.ui.log_message("请设置数据集路径")
+                self._sync_dataset_count_labels(local_count=None, remote_count=None, class_count=None)
+                self._set_dataset_ready(False)
+                return
 
-        # 检查指纹
-        current_fp = self.dataset_manager.get_dataset_fingerprint(dataset_path)
-        use_cache = self._last_dataset_fp and current_fp == self._last_dataset_fp
-        if use_cache:
-            self.ui.log_message("本地数据集未发生变化，跳过本地完整校验（指纹匹配）")
-            success, message = True, "本地检查通过(缓存)"
-            info = self.dataset_manager.get_dataset_info(dataset_path)
-            self.ui.dataset_check_status_var.set("检查状态: 通过 (缓存)")
-        else:
-            self.ui.log_message("正在检查数据集...")
-            success, message = self.dataset_manager.check_dataset(dataset_path)
-            info = self.dataset_manager.get_dataset_info(dataset_path) if success else {}
-
-        if success:
-            self._last_dataset_fp = current_fp
-            self.ui.log_message(f"数据集检查通过: {message}")
-            local_image_count = int(info.get("image_count", 0))
-            class_count = int(info.get("class_count", 0))
-            local_summary = (
-                f"图像: {local_image_count}, 标签: {info.get('label_count', 0)}, 类别: {class_count}"
-            )
-            remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
-            remote_diff = self.dataset_manager.compare_remote_image_diff(
-                dataset_path, remote_path, self.server_manager
-            )
-            if remote_diff.get("ok"):
-                need = int(remote_diff.get("need_upload", 0))
-                skip = int(remote_diff.get("skip_count", 0))
-                remote_total = int(remote_diff.get("remote_total", 0))
-                self._sync_dataset_count_labels(
-                    local_count=local_image_count,
-                    remote_count=remote_total,
-                    class_count=class_count,
-                )
-                self.ui.log_message(f"云端图片差异检查完成: 需上传 {need}，可跳过 {skip}")
-                summary = f"{local_summary} | 云端差异: 需上传 {need}, 可跳过 {skip}"
+            # 检查指纹
+            current_fp = self.dataset_manager.get_dataset_fingerprint(dataset_path)
+            use_cache = self._last_dataset_fp and current_fp == self._last_dataset_fp
+            if use_cache:
+                self.ui.log_message("本地数据集未发生变化，跳过本地完整校验（指纹匹配）")
+                success, message = True, "本地检查通过(缓存)"
+                info = self.dataset_manager.get_dataset_info(dataset_path)
+                self.ui.dataset_check_status_var.set("检查状态: 通过 (缓存)")
             else:
-                self._sync_dataset_count_labels(
-                    local_count=local_image_count,
-                    remote_count=None,
-                    class_count=class_count,
+                self.ui.log_message("正在检查数据集...")
+                success, message = self.dataset_manager.check_dataset(dataset_path)
+                info = self.dataset_manager.get_dataset_info(dataset_path) if success else {}
+
+            if success:
+                self._last_dataset_fp = current_fp
+                self.ui.log_message(f"数据集检查通过: {message}")
+                local_image_count = int(info.get("image_count", 0))
+                class_count = int(info.get("class_count", 0))
+                local_summary = (
+                    f"图像: {local_image_count}, 标签: {info.get('label_count', 0)}, 类别: {class_count}"
                 )
-                msg = str(remote_diff.get("msg", "")).strip() or "云端差异检查失败"
-                self.ui.log_message(f"云端图片差异检查跳过/失败: {msg}")
-                summary = f"{local_summary} | 云端差异: {msg}"
+                remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
+                remote_diff = self.dataset_manager.compare_remote_image_diff(
+                    dataset_path, remote_path, self.server_manager
+                )
+                if remote_diff.get("ok"):
+                    need = int(remote_diff.get("need_upload", 0))
+                    skip = int(remote_diff.get("skip_count", 0))
+                    remote_total = int(remote_diff.get("remote_total", 0))
+                    self._sync_dataset_count_labels(
+                        local_count=local_image_count,
+                        remote_count=remote_total,
+                        class_count=class_count,
+                    )
+                    self.ui.log_message(f"云端图片差异检查完成: 需上传 {need}，可跳过 {skip}")
+                    summary = f"{local_summary} | 云端差异: 需上传 {need}, 可跳过 {skip}"
+                else:
+                    self._sync_dataset_count_labels(
+                        local_count=local_image_count,
+                        remote_count=None,
+                        class_count=class_count,
+                    )
+                    msg = str(remote_diff.get("msg", "")).strip() or "云端差异检查失败"
+                    self.ui.log_message(f"云端图片差异检查跳过/失败: {msg}")
+                    summary = f"{local_summary} | 云端差异: {msg}"
 
-            self.ui.dataset_summary_var.set(f"检查总结: {summary}")
-            if not use_cache:
-                self.ui.dataset_check_status_var.set("检查状态: 通过")
+                self.ui.dataset_summary_var.set(f"检查总结: {summary}")
+                if not use_cache:
+                    self.ui.dataset_check_status_var.set("检查状态: 通过")
 
-            classes = info.get("classes", [])
-            if not classes:
-                # 尝试从标签解析
-                ids = self.dataset_manager.parse_classes_from_labels(dataset_path)
-                classes = [(str(cid), f"class_{cid}") for cid in ids]
-            
-            self.ui.update_classes_table(classes)
-            self._set_dataset_ready(True)
-            Notifier.play_sound("success")
-        else:
-            self.ui.log_message(f"数据集检查失败: {message}")
-            self.ui.dataset_check_status_var.set("检查状态: 失败")
-            self.ui.dataset_summary_var.set(f"检查总结: {message}")
-            self.ui.update_classes_table([])
-            self._sync_dataset_count_labels(local_count=None, remote_count=None, class_count=None)
-            self._set_dataset_ready(False)
-            Notifier.play_sound("error")
+                classes = info.get("classes", [])
+                if not classes:
+                    # 尝试从标签解析
+                    ids = self.dataset_manager.parse_classes_from_labels(dataset_path)
+                    classes = [(str(cid), f"class_{cid}") for cid in ids]
+                
+                self.ui.update_classes_table(classes)
+                self._set_dataset_ready(True)
+                Notifier.play_sound("success")
+            else:
+                self.ui.log_message(f"数据集检查失败: {message}")
+                self.ui.dataset_check_status_var.set("检查状态: 失败")
+                self.ui.dataset_summary_var.set(f"检查总结: {message}")
+                self.ui.update_classes_table([])
+                self._sync_dataset_count_labels(local_count=None, remote_count=None, class_count=None)
+                self._set_dataset_ready(False)
+                Notifier.play_sound("error")
+        finally:
+            if not _from_locked:
+                self._end_server_operation("check_dataset")
 
     def _upload_dataset(self):
         """上传数据集（优化并发上传与通知）"""
@@ -810,6 +885,8 @@ class Application:
         dataset_path = self.ui.dataset_path_var.get()
         if not dataset_path:
             self.ui.log_message("请设置数据集路径")
+            return
+        if not self._begin_server_operation("upload_dataset", "上传数据集"):
             return
 
         remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
@@ -848,12 +925,13 @@ class Application:
                     Notifier.notify("上传完成", f"数据集已成功上云: {os.path.basename(dataset_path)}")
                     Notifier.play_sound("success")
                     # 上传完成后，立即触发一次数据集检查，以更新云端图片计数和差异状态
-                    self._check_dataset()
+                    self._check_dataset(_from_locked=True)
                 else:
                     self.ui.log_message(f"上传失败: {msg}")
                     self.ui.upload_status_var.set("上传失败")
                     Notifier.notify("上传失败", msg)
                     Notifier.play_sound("error")
+                self._end_server_operation("upload_dataset")
 
             self.root.after(0, finish)
 
@@ -861,8 +939,11 @@ class Application:
 
     def _clear_dataset(self):
         """清空远程训练集"""
+        if not self._begin_server_operation("clear_dataset", "清空远程训练集"):
+            return
         remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
         if not messagebox.askyesno("确认", f"确认清空远程目录？\n{remote_path}"):
+            self._end_server_operation("clear_dataset")
             return
         self.ui.log_message(f"正在清空远程训练集: {remote_path}")
 
@@ -875,9 +956,10 @@ class Application:
                     self.ui.dataset_summary_var.set("检查总结: 远程训练集已清空")
                     self._sync_dataset_count_labels(remote_count=0)
                     # 清空后立即再次检查训练集（含云端差异），确保状态与计数实时刷新
-                    self._check_dataset()
+                    self._check_dataset(_from_locked=True)
                 else:
                     self.ui.log_message(f"清空失败: {msg}")
+                self._end_server_operation("clear_dataset")
 
             self.root.after(0, finish)
 
@@ -885,12 +967,16 @@ class Application:
 
     def _start_training(self):
         """开始训练（流式日志回传 + 实时图表）"""
+        if not self._begin_server_operation("training", "开始训练"):
+            return
         if self._training_running:
             self.ui.log_message("训练已在进行中")
+            self._end_server_operation("training")
             return
         dataset_path = self.ui.dataset_path_var.get()
         if not dataset_path:
             self.ui.log_message("请设置数据集路径")
+            self._end_server_operation("training")
             return
 
         self._update_config_from_ui()
@@ -1011,6 +1097,7 @@ class Application:
                 self.training_monitor_manager.end_session()
                 self.training_log_manager.close_session()
                 self._refresh_start_training_button_state()
+                self._end_server_operation("training")
 
             self.root.after(0, finish)
 
@@ -1065,6 +1152,9 @@ class Application:
 
     def _download_model(self):
         """打开服务器模型列表窗口（下载/删除/转换统一入口）。"""
+        if self._active_server_operation:
+            self.ui.log_message(f"当前正在执行[{self._active_server_operation_label}]，请稍后再打开模型列表。")
+            return
         if not self.server_manager.is_connected:
             messagebox.showerror("错误", "请先连接服务器")
             return
@@ -1080,8 +1170,26 @@ class Application:
         win.title("服务器模型列表")
         win.geometry("1380x760")
         win.transient(self.root)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
         win.grab_set()
+        win.focus_force()
+        self._center_child_window(win)
+        win.after(0, lambda: self._center_child_window(win))
         self._model_list_window = win
+
+        def close_model_window():
+            try:
+                win.grab_release()
+            except Exception:
+                pass
+            if win.winfo_exists():
+                win.destroy()
+            self._model_list_window = None
+
+        win.protocol("WM_DELETE_WINDOW", close_model_window)
 
         ttk.Label(win, text="服务器模型列表", font=("Arial", 14, "bold")).pack(pady=(10, 6))
 
@@ -1419,7 +1527,7 @@ class Application:
         download_btn = ttk.Button(action_frame, text="下载选中", bootstyle="success", command=start_download)
         delete_btn = ttk.Button(action_frame, text="删除模型", bootstyle="danger", command=delete_selected)
         convert_btn = ttk.Button(action_frame, text="TFLite转换", bootstyle="warning", command=convert_selected)
-        close_btn = ttk.Button(action_frame, text="关闭", bootstyle="secondary", command=win.destroy)
+        close_btn = ttk.Button(action_frame, text="关闭", bootstyle="secondary", command=close_model_window)
 
         refresh_btn.pack(side="left", padx=(0, 6))
         download_btn.pack(side="left", padx=(0, 6))
@@ -1431,12 +1539,11 @@ class Application:
         self._model_list_refresh_fn = refresh_models
         refresh_models()
 
-    def _convert_tflite(self):
-        """TFLite转换入口改为模型列表页（按选中模型转换）。"""
-        self._download_model()
-
     def _open_file_manager(self):
         """远程文件管理窗口"""
+        if self._active_server_operation:
+            self.ui.log_message(f"当前正在执行[{self._active_server_operation_label}]，请稍后再打开文件管理。")
+            return
         if self._remote_file_window and self._remote_file_window.exists():
             self._remote_file_window.lift()
             return
@@ -1451,6 +1558,9 @@ class Application:
 
     def _open_fullscreen_monitor(self):
         """全屏监控窗口"""
+        if not self.server_manager.is_connected:
+            self.ui.log_message("服务器未连接，无法打开训练监控大屏")
+            return
         if self._monitor_window and self._monitor_window.exists():
             self._monitor_window.lift()
             return

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-云端训练管理平台 v3.0.0 - 纯UI界面
+云端训练管理平台 v3.0.4 - 纯UI界面
 仅负责布局和控件创建，不包含业务逻辑
 """
 
@@ -22,7 +22,7 @@ class MainWindow:
     
     def __init__(self, root):
         self.root = root
-        self.app_version = "v3.0.0"
+        self.app_version = "v3.0.4"
         self.root.title(f"云端训练管理平台 {self.app_version}")
         self.root.geometry("1240x900")
         self.root.minsize(1190, 720)
@@ -105,7 +105,6 @@ class MainWindow:
         self._monitor_section_frame = None
         self._log_section_frame = None
         self._top_row_sync_after_id = None
-        self._loss_resize_after_id = None
         self._last_loss_canvas_size = (0, 0)
     
     def _create_ui(self):
@@ -301,112 +300,7 @@ class MainWindow:
                 continue
             section.configure(height=target_h)
             section.grid_propagate(False)
-        self._schedule_loss_canvas_resize()
 
-    def _schedule_loss_canvas_resize(self, _event=None):
-        """防抖调度：Loss 画布按容器尺寸缩放，避免越界。"""
-        if self._loss_resize_after_id:
-            self.root.after_cancel(self._loss_resize_after_id)
-        self._loss_resize_after_id = self.root.after(30, self._apply_loss_canvas_resize)
-
-    def _apply_loss_canvas_resize(self):
-        self._loss_resize_after_id = None
-        if not hasattr(self, "loss_frame") or not hasattr(self, "loss_fig") or not hasattr(self, "loss_canvas"):
-            return
-        self.root.update_idletasks()
-        width = int(self.loss_frame.winfo_width() or 0)
-        height = int(self.loss_frame.winfo_height() or 0)
-        # 扣除边框与内边距，防止图像溢出容器
-        inner_w = max(180, width - 12)
-        inner_h = max(70, height - 12)
-        if (inner_w, inner_h) == self._last_loss_canvas_size:
-            return
-        self._last_loss_canvas_size = (inner_w, inner_h)
-        dpi = float(self.loss_fig.get_dpi() or 90.0)
-        self.loss_fig.set_size_inches(inner_w / dpi, inner_h / dpi, forward=True)
-        self.loss_canvas.draw_idle()
-    
-    def _create_server_section(self, parent, row, column):
-        """创建服务器设置区域 - 严格按照设计稿"""
-        frame = ttk.Labelframe(parent, text="服务器设置", padding="10")
-        frame.grid(row=row, column=column, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=0)
-        
-        # 配置4列布局（前3行用2列，状态信息用4列）
-        frame.columnconfigure(0, weight=0)
-        frame.columnconfigure(1, weight=1)
-        frame.columnconfigure(2, weight=0)
-        frame.columnconfigure(3, weight=0)
-        
-        # 第1行: 服务器IP 和 端口
-        ttk.Label(frame, text="服务器IP:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.hostname_var, width=14).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5, padx=(0, 5))
-        ttk.Label(frame, text="端口:").grid(row=0, column=2, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.port_var, width=6).grid(row=0, column=3, sticky=(tk.W, tk.E), pady=5)
-        
-        # 第2行: 用户名
-        ttk.Label(frame, text="用户名:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.username_var, width=20).grid(row=1, column=1, columnspan=3, sticky=(tk.W, tk.E), pady=5)
-
-        # 第3行: 密码
-        ttk.Label(frame, text="密码:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.password_var, show="*", width=20).grid(row=2, column=1, columnspan=3, sticky=(tk.W, tk.E), pady=5)
-        
-        # 按钮行
-        btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=3, column=0, columnspan=4, pady=(10, 0))
-        self.btn_test_connection = ttk.Button(btn_frame, text="连接")
-        self.btn_test_connection.pack(side=tk.LEFT, padx=(0, 5))
-        self.btn_file_manager = ttk.Button(btn_frame, text="文件管理")
-        self.btn_file_manager.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # 状态信息（主机名、操作系统等）- 双列布局节省空间
-        sep = ttk.Separator(frame, orient=tk.HORIZONTAL)
-        sep.grid(row=4, column=0, columnspan=4, sticky=(tk.W, tk.E), pady=(10, 5))
-        
-        # 连接状态显示
-        self.connection_status_label = ttk.Label(frame, textvariable=self.connection_status_var, foreground="red")
-        self.connection_status_label.grid(row=5, column=0, columnspan=4, pady=5)
-        
-        # 第1行：主机名 | 操作系统
-        ttk.Label(frame, text="主机名:").grid(row=6, column=0, sticky=tk.W, pady=2)
-        self.hostname_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.hostname_info_var).grid(row=6, column=1, sticky=tk.W, pady=2)
-        ttk.Label(frame, text="操作系统:").grid(row=6, column=2, sticky=tk.W, padx=(15, 0), pady=2)
-        self.os_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.os_info_var).grid(row=6, column=3, sticky=tk.W, pady=2)
-        
-        # 第2行：CPU | GPU
-        ttk.Label(frame, text="CPU:").grid(row=7, column=0, sticky=tk.W, pady=2)
-        self.cpu_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.cpu_info_var).grid(row=7, column=1, sticky=tk.W, pady=2)
-        ttk.Label(frame, text="GPU:").grid(row=7, column=2, sticky=tk.W, padx=(15, 0), pady=2)
-        self.gpu_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.gpu_info_var).grid(row=7, column=3, sticky=tk.W, pady=2)
-        
-        # 第3行：内存 | 磁盘
-        ttk.Label(frame, text="内存:").grid(row=8, column=0, sticky=tk.W, pady=2)
-        self.memory_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.memory_info_var).grid(row=8, column=1, sticky=tk.W, pady=2)
-        ttk.Label(frame, text="磁盘:").grid(row=8, column=2, sticky=tk.W, padx=(15, 0), pady=2)
-        self.disk_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.disk_info_var).grid(row=8, column=3, sticky=tk.W, pady=2)
-        
-        # 第4行：Ping | 连接状态
-        ttk.Label(frame, text="Ping:").grid(row=8, column=0, sticky=tk.W, pady=2)
-        self.ping_info_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=self.ping_info_var).grid(row=8, column=1, sticky=tk.W, pady=2)
-        self.connection_status_var = tk.StringVar(value="未连接")
-        ttk.Label(frame, text="连接状态:").grid(row=8, column=2, sticky=tk.W, padx=(15, 0), pady=2)
-        
-        # 连接状态图标+文本
-        status_frame = ttk.Frame(frame)
-        status_frame.grid(row=8, column=3, sticky=tk.W, pady=2)
-        # 使用 Canvas 绘制圆点，兼容性更好
-        self.status_canvas = tk.Canvas(status_frame, width=12, height=12, bg="white", highlightthickness=0)
-        self.status_canvas.create_oval(1, 1, 11, 11, fill="red", outline="red")
-        self.status_canvas.pack(side=tk.LEFT)
-        ttk.Label(status_frame, textvariable=self.connection_status_var).pack(side=tk.LEFT, padx=(5, 0))
-    
     def _create_monitor_section(self, parent, row, column):
         """创建系统监控区域 - 优化空间占用，合并文字监控"""
         frame = ttk.Labelframe(parent, text="系统监控", padding="4")
@@ -447,17 +341,18 @@ class MainWindow:
         ttk.Label(bottom_line, textvariable=self.status_eta_var, font=("Arial", 9)).pack(side=tk.LEFT, padx=(0, 3))
         
         # 第1行：Loss曲线 (高度缩小)
-        self.loss_frame = ttk.Labelframe(frame, text="Loss曲线", padding="0")
+        self.loss_frame = ttk.Labelframe(frame, text="Loss曲线", padding="6")
         self.loss_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 0))
         self.loss_frame.columnconfigure(0, weight=1)
         self.loss_frame.rowconfigure(0, weight=1)
-        self.loss_frame.bind("<Configure>", self._schedule_loss_canvas_resize)
+        # 移除手动的 <Configure> 绑定，交由 Matplotlib 的 FigureCanvasTkAgg 自动处理尺寸变化
         
         # 初始化 Loss 图表 (减小 figsize 以降低高度)
         plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
         plt.rcParams['axes.unicode_minus'] = False
         
         self.loss_fig = Figure(figsize=(5, 0.95), dpi=90) # 初始化尺寸，后续随容器自适应
+        self.loss_fig.patch.set_facecolor('#ffffff') # 强制白色背景避免残影
         self.loss_ax = self.loss_fig.add_subplot(111)
         self.loss_fig.subplots_adjust(left=0.07, right=0.985, top=0.94, bottom=0.16)
         self.loss_ax.grid(True, linestyle='--', alpha=0.6)
@@ -466,7 +361,6 @@ class MainWindow:
         self.loss_canvas = FigureCanvasTkAgg(self.loss_fig, self.loss_frame)
         loss_widget = self.loss_canvas.get_tk_widget()
         loss_widget.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.root.after(0, self._schedule_loss_canvas_resize)
     
     def update_cpu_chart(self, value):
         """更新 CPU 监控文字"""
@@ -478,7 +372,9 @@ class MainWindow:
 
     def update_loss_chart(self, epoch_data, box_data, cls_data, dfl_data):
         """更新 Loss 曲线图表 (增强点标记与自动标注)"""
-        self.loss_ax.clear()
+        # 完全清空 Figure 以避免多重坐标轴残影
+        self.loss_fig.clear()
+        self.loss_ax = self.loss_fig.add_subplot(111)
         self.loss_fig.subplots_adjust(left=0.07, right=0.985, top=0.94, bottom=0.16)
         self.loss_ax.grid(True, linestyle='--', alpha=0.4)
         self.loss_ax.tick_params(axis='both', which='major', labelsize=6)
@@ -565,43 +461,6 @@ class MainWindow:
         self.log_text = scrolledtext.ScrolledText(frame, height=15, width=40, font=('Consolas', 10))
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
     
-    def _create_training_params_section(self, parent, row, column):
-        """创建训练参数区域 - 3行2列等发布局优化"""
-        frame = ttk.Labelframe(parent, text="训练参数", padding="10")
-        frame.grid(row=row, column=column, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=0)
-        
-        # 强制1和3列绝对等宽
-        frame.columnconfigure(1, weight=1, uniform="group1")
-        frame.columnconfigure(3, weight=1, uniform="group1")
-        
-        # 第1行：训练轮数 和 批次大小
-        ttk.Label(frame, text="训练轮数:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.epochs_var, width=8).grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5, padx=(0, 15))
-        
-        ttk.Label(frame, text="批次大小:").grid(row=0, column=2, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.batch_size_var, width=8).grid(row=0, column=3, sticky=(tk.W, tk.E), pady=5)
-        
-        # 第2行：分辨率 和 学习率
-        ttk.Label(frame, text="分辨率:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.image_size_var, width=8).grid(row=1, column=1, sticky=(tk.W, tk.E), pady=5, padx=(0, 15))
-        
-        ttk.Label(frame, text="学习率:").grid(row=1, column=2, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.learning_rate_var, width=8).grid(row=1, column=3, sticky=(tk.W, tk.E), pady=5)
-        
-        # 第3行：模型命名 和 基础模型
-        ttk.Label(frame, text="模型命名:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(frame, textvariable=self.model_name_suffix_var, width=8).grid(row=2, column=1, sticky=(tk.W, tk.E), pady=5, padx=(0, 15))
-        
-        ttk.Label(frame, text="基础模型:").grid(row=2, column=2, sticky=tk.W, pady=5)
-        self.cmb_base_model = ttk.Combobox(frame, textvariable=self.base_model_var, width=12)
-        self.cmb_base_model['values'] = (
-            'yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt',
-            'yolov9c.pt', 'yolov9e.pt',
-            'yolov10n.pt', 'yolov10s.pt', 'yolov10m.pt', 'yolov10b.pt', 'yolov10l.pt', 'yolov10x.pt',
-            'yolov11n.pt', 'yolov11s.pt', 'yolov11m.pt', 'yolov11l.pt', 'yolov11x.pt'
-        )
-        self.cmb_base_model.grid(row=2, column=3, sticky=tk.W, pady=5)
-    
     def _create_progress_section(self, parent, row, column, columnspan=1):
         """创建操作进度区域 - 紧凑布局"""
         frame = ttk.Labelframe(parent, text="操作进度", padding="5")
@@ -614,52 +473,6 @@ class MainWindow:
         
         self.progress_bar = ttk.Progressbar(frame, variable=self.upload_progress_var, maximum=100)
         self.progress_bar.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
-    
-    def _create_augment_section(self, parent, row, column):
-        """创建图像增强区域 - 紧凑布局"""
-        frame = ttk.Labelframe(parent, text="图像增强", padding="5")
-        frame.grid(row=row, column=column, sticky=(tk.W, tk.E), padx=5, pady=0)
-        frame.columnconfigure(1, weight=1)
-        
-        # 图像增强参数配置
-        augment_configs = [
-            ("缩放增强:", self.augment_scale_var, 0.0, 1.0, 0.5),
-            ("水平翻转:", self.augment_fliplr_var, 0.0, 1.0, 0.5),
-            ("色调变化:", self.augment_hsv_h_var, 0.0, 0.1, 0.015),
-            ("饱和变化:", self.augment_hsv_s_var, 0.0, 1.0, 0.7),
-            ("亮度变化:", self.augment_hsv_v_var, 0.0, 1.0, 0.4),
-        ]
-        
-        self.augment_sliders = {}
-        self.augment_active_vars = {}
-        
-        for i, (label, var, from_, to, default) in enumerate(augment_configs):
-            ttk.Label(frame, text=label, width=10, font=('Arial', 9)).grid(row=i, column=0, sticky=tk.W, pady=2)
-            
-            slider_frame = ttk.Frame(frame)
-            slider_frame.grid(row=i, column=1, sticky=(tk.W, tk.E), pady=2)
-            slider_frame.columnconfigure(0, weight=1)
-            
-            resolution = 0.001 if to <= 1 else 0.01
-            scale = tk.Scale(slider_frame, from_=from_, to=to, orient=tk.HORIZONTAL,
-                           variable=var, resolution=resolution,
-                           showvalue=False, length=100, sliderlength=12)
-            scale.grid(row=0, column=0, sticky=(tk.W, tk.E))
-            
-            value_label = ttk.Label(slider_frame, text=f"{var.get():.3f}", width=6, font=('Arial', 9))
-            value_label.grid(row=0, column=1, padx=(5, 0))
-            
-            active_var = tk.BooleanVar(value=True)
-            chk = ttk.Checkbutton(slider_frame, text="启用", variable=active_var, width=5)
-            chk.grid(row=0, column=2, padx=(5, 0))
-            
-            self.augment_sliders[label] = (scale, value_label)
-            self.augment_active_vars[label] = active_var
-            
-            # 绑定数值更新
-            def update_value(*args, v=var, lbl=value_label):
-                lbl.config(text=f"{v.get():.3f}")
-            var.trace_add('write', update_value)
     
     def _create_dataset_info_section(self, parent, row, column):
         """创建数据集信息区域 - 严格按照设计稿"""

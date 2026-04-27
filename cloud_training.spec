@@ -4,7 +4,7 @@ block_cipher = None
 
 # 如果需要手动指定版本，可以在这里修改，或者通过环境变量传入
 import os
-version = os.environ.get('APP_VERSION', 'v3.0.3')
+version = os.environ.get('APP_VERSION', 'v3.0.4')
 
 a = Analysis(
     ['main.py'],
@@ -15,7 +15,24 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # 本地 GUI 客户端不直接依赖这些重型推理库，排除可显著减小体积
+        'torch',
+        'torchvision',
+        'torchaudio',
+        'ultralytics',
+        'cv2',
+        'onnx',
+        'onnxruntime',
+        # 使用 TkAgg，不需要 Qt 相关后端
+        'PyQt5',
+        'PyQt6',
+        'PySide2',
+        'PySide6',
+        'shiboken2',
+        'shiboken6',
+        'qtpy',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
