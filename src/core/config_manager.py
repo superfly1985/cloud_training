@@ -36,7 +36,14 @@ class ConfigManager:
             'augment_perspective': 0.0,
             'augment_hsv_h': 0.015,
             'augment_hsv_s': 0.7,
-            'augment_hsv_v': 0.4
+            'augment_hsv_v': 0.4,
+            'augment_scale_active': True,
+            'augment_fliplr_active': True,
+            'augment_flipud_active': True,
+            'augment_perspective_active': True,
+            'augment_hsv_h_active': True,
+            'augment_hsv_s_active': True,
+            'augment_hsv_v_active': True,
         }
         
         self.ui_config = {
@@ -63,6 +70,8 @@ class ConfigManager:
                 'retry_times': 3
             }
         }
+        # 供字段映射层直接访问上传配置
+        self.upload_config = self.config['upload']
         self.load_config()
     
     def load_config(self):

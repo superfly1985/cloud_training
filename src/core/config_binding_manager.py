@@ -29,6 +29,16 @@ class ConfigBindingManager:
                 "augment_hsv_v": "augment_hsv_v_var",
                 "augment_flipud": "flipud_var",
                 "augment_perspective": "perspective_var",
+                "augment_scale_active": "augment_scale_active_var",
+                "augment_fliplr_active": "augment_fliplr_active_var",
+                "augment_flipud_active": "augment_flipud_active_var",
+                "augment_perspective_active": "augment_perspective_active_var",
+                "augment_hsv_h_active": "augment_hsv_h_active_var",
+                "augment_hsv_s_active": "augment_hsv_s_active_var",
+                "augment_hsv_v_active": "augment_hsv_v_active_var",
+            },
+            "upload_config": {
+                "max_workers": "upload_max_workers_var",
             },
         }
         self._update_mapping = {
@@ -57,6 +67,16 @@ class ConfigBindingManager:
                 "augment_hsv_h": ("augment_hsv_h_var", float),
                 "augment_hsv_s": ("augment_hsv_s_var", float),
                 "augment_hsv_v": ("augment_hsv_v_var", float),
+                "augment_scale_active": ("augment_scale_active_var", bool),
+                "augment_fliplr_active": ("augment_fliplr_active_var", bool),
+                "augment_flipud_active": ("augment_flipud_active_var", bool),
+                "augment_perspective_active": ("augment_perspective_active_var", bool),
+                "augment_hsv_h_active": ("augment_hsv_h_active_var", bool),
+                "augment_hsv_s_active": ("augment_hsv_s_active_var", bool),
+                "augment_hsv_v_active": ("augment_hsv_v_active_var", bool),
+            },
+            "upload_config": {
+                "max_workers": ("upload_max_workers_var", int),
             },
         }
 
@@ -68,7 +88,7 @@ class ConfigBindingManager:
             for key, ui_var_name in fields.items():
                 if key not in config_data or not hasattr(ui, ui_var_name):
                     continue
-                getattr(ui, ui_var_name).set(str(config_data[key]))
+                getattr(ui, ui_var_name).set(config_data[key])
 
     def update_config_from_ui(self, ui, config_manager):
         for section, fields in self._update_mapping.items():

@@ -167,9 +167,23 @@ class DatasetManager:
         except Exception:
             return {'image_count': 0, 'label_count': 0, 'class_count': 0, 'classes': []}
 
-    def upload_dataset(self, local_path, remote_path, server_manager, progress_callback=None, log_callback=None):
+    def upload_dataset(
+        self,
+        local_path,
+        remote_path,
+        server_manager,
+        progress_callback=None,
+        log_callback=None,
+        stop_callback=None,
+    ):
         """上传完整数据集目录到远端"""
-        return server_manager.upload_dir(local_path, remote_path, progress_callback=progress_callback, log_callback=log_callback)
+        return server_manager.upload_dir(
+            local_path,
+            remote_path,
+            progress_callback=progress_callback,
+            log_callback=log_callback,
+            stop_callback=stop_callback,
+        )
 
     def clear_remote_dataset(self, remote_path, server_manager):
         """清空远端训练集目录"""

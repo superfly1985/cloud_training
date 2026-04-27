@@ -31,14 +31,14 @@
         "augment_hsv_v": 0.179,
         "augment_scale_active": true,
         "augment_fliplr_active": true,
+        "augment_flipud_active": false,
+        "augment_perspective_active": true,
         "augment_hsv_h_active": false,
         "augment_hsv_s_active": false,
-        "augment_hsv_v_active": false,
-        "augment_flipud_active": false,
-        "augment_perspective_active": true
+        "augment_hsv_v_active": false
     },
     "ui": {
-        "window_width": 1250,
+        "window_width": 1278,
         "window_height": 850,
         "window_state": "normal",
         "window_x": 196,

@@ -1,5 +1,35 @@
 # 更新日志
 
+## v3.0.5 (2026-04-27)
+
+### 摘要
+- **上传交互修复**：上传按钮改为“上传训练集 / 停止上传”双态切换，支持上传中主动停止
+- **配置持久化修复**：图像增强“启用开关”纳入配置映射并自动保存，重启后状态可恢复
+- **易用性优化**：新增上传并发线程可选控件，并完成布局重排，避免挤压与变形
+
+### 详细变更
+- **上传流程状态机（`main.py` + `src/core/*`）**
+  - 新增上传运行态标记：`_upload_running`、`_upload_stop_requested`
+  - 上传按钮入口改为 `_toggle_upload_dataset`，上传中再次点击可触发停止请求
+  - 上传链路新增 `stop_callback` 透传：`main.py` → `dataset_manager.py` → `server_manager.py`
+  - 并发上传执行器增加停止检测与待执行任务取消，停止后返回明确状态
+
+- **图像增强开关持久化（`src/ui/main_window.py` + `src/core/config_*`）**
+  - 为 7 个增强项补齐独立 `BooleanVar`（含 `scale/fliplr/flipud/perspective/hsv_*`）
+  - `ConfigBindingManager` 增加增强开关字段映射（load/update 双向）
+  - `ConfigManager.training_config` 增加增强开关默认项
+  - 自动保存监听加入增强开关变量，改动后可实时落盘
+
+- **上传线程控件与布局（`src/ui/main_window.py`）**
+  - 新增 `upload_max_workers_var`，并映射到 `upload.max_workers`
+  - 按钮行由 `pack` 重排为 `grid`，右侧独立放置上传线程下拉框
+  - 去掉文字占位后保留下拉控件，控件宽度按需求调整为当前的 50%
+
+### 版本升级
+- v3.0.4 → v3.0.5（上传交互、配置持久化与布局可用性优化）
+
+---
+
 ## v3.0.3 (2026-04-24)
 
 ### 摘要

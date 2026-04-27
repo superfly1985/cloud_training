@@ -70,6 +70,8 @@ class Application:
         self._loss_chart_refresh_fn = None
         self._training_running = False
         self._training_stop_requested = False
+        self._upload_running = False
+        self._upload_stop_requested = False
         self._remote_file_window = None
         self._model_list_window = None
         self._last_dataset_fp = ""
@@ -199,6 +201,8 @@ class Application:
         for btn_name in lock_btns:
             if op_key == "training" and btn_name == "btn_start_training":
                 continue
+            if op_key == "upload_dataset" and btn_name == "btn_upload_dataset":
+                continue
             btn = getattr(self.ui, btn_name, None)
             if btn is None:
                 continue
@@ -227,6 +231,7 @@ class Application:
                 continue
         self._set_operational_buttons_enabled(self.server_manager.is_connected)
         self._refresh_start_training_button_state()
+        self._refresh_upload_button_state()
 
     def _setup_log_tags(self):
         """初始化日志颜色标签"""
@@ -346,7 +351,7 @@ class Application:
         self.ui.btn_file_manager.config(command=self._open_file_manager)
 
         self.ui.btn_select_dataset.config(command=self._select_dataset)
-        self.ui.btn_upload_dataset.config(command=self._upload_dataset)
+        self.ui.btn_upload_dataset.config(command=self._toggle_upload_dataset)
         self.ui.btn_clear_dataset.config(command=self._clear_dataset)
 
         self.ui.btn_check_env.config(command=self._check_environment)
@@ -386,6 +391,14 @@ class Application:
             self.ui.augment_hsv_h_var,
             self.ui.augment_hsv_s_var,
             self.ui.augment_hsv_v_var,
+            self.ui.augment_scale_active_var,
+            self.ui.augment_fliplr_active_var,
+            self.ui.augment_flipud_active_var,
+            self.ui.augment_perspective_active_var,
+            self.ui.augment_hsv_h_active_var,
+            self.ui.augment_hsv_s_active_var,
+            self.ui.augment_hsv_v_active_var,
+            self.ui.upload_max_workers_var,
         ]
         for v in vars_for_autosave:
             v.trace_add("write", self._on_config_var_changed)
@@ -515,6 +528,38 @@ class Application:
             self.ui.btn_start_training.config(text="停止训练", bootstyle="danger")
         else:
             self.ui.btn_start_training.config(text="开始训练", bootstyle="success")
+
+    def _set_upload_button_running(self, running):
+        """根据上传状态切换按钮文案与样式。"""
+        if not hasattr(self.ui, "btn_upload_dataset"):
+            return
+        if running:
+            self.ui.btn_upload_dataset.config(text="停止上传", bootstyle="danger")
+        else:
+            self.ui.btn_upload_dataset.config(text="上传训练集", bootstyle="success")
+
+    def _refresh_upload_button_state(self):
+        """刷新上传按钮状态与文案。"""
+        if not hasattr(self.ui, "btn_upload_dataset"):
+            return
+        self._set_upload_button_running(self._upload_running)
+        if self._upload_running:
+            self.ui.btn_upload_dataset.config(state="normal")
+
+    def _toggle_upload_dataset(self):
+        """上传按钮切换入口：未上传则开始，上传中则停止。"""
+        if self._upload_running:
+            self._stop_upload_dataset()
+        else:
+            self._upload_dataset()
+
+    def _stop_upload_dataset(self):
+        """请求停止当前上传任务。"""
+        if not self._upload_running:
+            return
+        self._upload_stop_requested = True
+        self.ui.upload_status_var.set("正在停止上传...")
+        self.ui.log_message("已请求停止上传，等待当前传输中的文件结束...")
 
     def _toggle_training(self):
         """训练按钮切换入口：未运行则开始，运行中则停止。"""
@@ -881,6 +926,9 @@ class Application:
 
     def _upload_dataset(self):
         """上传数据集（优化并发上传与通知）"""
+        if self._upload_running:
+            self.ui.log_message("上传任务正在进行中")
+            return
         self._update_config_from_ui()
         dataset_path = self.ui.dataset_path_var.get()
         if not dataset_path:
@@ -890,6 +938,9 @@ class Application:
             return
 
         remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
+        self._upload_running = True
+        self._upload_stop_requested = False
+        self._refresh_upload_button_state()
         self.ui.upload_status_var.set("正在上传...")
         self.ui.upload_progress_var.set(0)
         self.ui.log_message(f"开始上传训练集到: {remote_path}")
@@ -914,6 +965,7 @@ class Application:
                 self.server_manager,
                 progress_callback=progress,
                 log_callback=lambda m: self.ui.log_message(m),
+                stop_callback=lambda: self._upload_stop_requested,
             )
 
             def finish():
@@ -927,10 +979,17 @@ class Application:
                     # 上传完成后，立即触发一次数据集检查，以更新云端图片计数和差异状态
                     self._check_dataset(_from_locked=True)
                 else:
-                    self.ui.log_message(f"上传失败: {msg}")
-                    self.ui.upload_status_var.set("上传失败")
-                    Notifier.notify("上传失败", msg)
-                    Notifier.play_sound("error")
+                    if self._upload_stop_requested:
+                        self.ui.log_message(msg)
+                        self.ui.upload_status_var.set("上传已停止")
+                    else:
+                        self.ui.log_message(f"上传失败: {msg}")
+                        self.ui.upload_status_var.set("上传失败")
+                        Notifier.notify("上传失败", msg)
+                        Notifier.play_sound("error")
+                self._upload_running = False
+                self._upload_stop_requested = False
+                self._refresh_upload_button_state()
                 self._end_server_operation("upload_dataset")
 
             self.root.after(0, finish)

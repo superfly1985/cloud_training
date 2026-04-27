@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-云端训练管理平台 v3.0.4 - 纯UI界面
+云端训练管理平台 v3.0.5 - 纯UI界面
 仅负责布局和控件创建，不包含业务逻辑
 """
 
@@ -22,7 +22,7 @@ class MainWindow:
     
     def __init__(self, root):
         self.root = root
-        self.app_version = "v3.0.4"
+        self.app_version = "v3.0.5"
         self.root.title(f"云端训练管理平台 {self.app_version}")
         self.root.geometry("1240x900")
         self.root.minsize(1190, 720)
@@ -60,6 +60,13 @@ class MainWindow:
         self.augment_hsv_h_var = tk.DoubleVar(value=0.015)
         self.augment_hsv_s_var = tk.DoubleVar(value=0.7)
         self.augment_hsv_v_var = tk.DoubleVar(value=0.4)
+        self.augment_scale_active_var = tk.BooleanVar(value=True)
+        self.augment_fliplr_active_var = tk.BooleanVar(value=True)
+        self.augment_flipud_active_var = tk.BooleanVar(value=True)
+        self.augment_perspective_active_var = tk.BooleanVar(value=True)
+        self.augment_hsv_h_active_var = tk.BooleanVar(value=True)
+        self.augment_hsv_s_active_var = tk.BooleanVar(value=True)
+        self.augment_hsv_v_active_var = tk.BooleanVar(value=True)
         
         # 数据集变量
         self.dataset_path_var = tk.StringVar(value="D:\\datasets\\train")
@@ -86,6 +93,7 @@ class MainWindow:
         self.dataset_check_status_var = tk.StringVar(value="检查状态: 未检查")
         self.dataset_summary_var = tk.StringVar(value="检查总结: 未生成")
         self.upload_progress_var = tk.DoubleVar(value=0)
+        self.upload_max_workers_var = tk.StringVar(value="8")
         self.training_status_var = tk.StringVar(value="未开始")
         self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
         self.status_eta_var = tk.StringVar(value="预计完成: --")
@@ -526,16 +534,27 @@ class MainWindow:
             
         # 按钮行
         btn_frame = ttk.Frame(frame)
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
-        
+        btn_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+        btn_frame.columnconfigure(3, weight=1)
+
         self.btn_select_dataset = ttk.Button(btn_frame, text="选择训练集")
-        self.btn_select_dataset.pack(side=tk.LEFT, padx=(0, 5))
-        
+        self.btn_select_dataset.grid(row=0, column=0, padx=(0, 5), sticky=tk.W)
+
         self.btn_upload_dataset = ttk.Button(btn_frame, text="上传训练集", bootstyle="success")
-        self.btn_upload_dataset.pack(side=tk.LEFT, padx=(0, 5))
-        
+        self.btn_upload_dataset.grid(row=0, column=1, padx=(0, 5), sticky=tk.W)
+
         self.btn_clear_dataset = ttk.Button(btn_frame, text="清空训练集", bootstyle="danger")
-        self.btn_clear_dataset.pack(side=tk.LEFT, padx=(0, 5))
+        self.btn_clear_dataset.grid(row=0, column=2, padx=(0, 5), sticky=tk.W)
+
+        self.cmb_upload_workers = ttk.Combobox(
+            btn_frame,
+            width=5,
+            textvariable=self.upload_max_workers_var,
+            state="readonly",
+            justify="center",
+            values=[str(i) for i in range(1, 33)],
+        )
+        self.cmb_upload_workers.grid(row=0, column=5, padx=(8, 0), sticky=tk.E)
     
     def update_classes_table(self, classes_list):
         """更新类别列表表格
@@ -713,19 +732,19 @@ class MainWindow:
         
         # 图像增强参数配置（7个参数：原5个 + 垂直翻转 + 透视变换）
         augment_configs = [
-            ("缩放增强:", self.augment_scale_var, 0.0, 1.0, 0.5),
-            ("水平翻转:", self.augment_fliplr_var, 0.0, 1.0, 0.5),
-            ("垂直翻转:", self.flipud_var, 0.0, 1.0, 0.5),
-            ("透视变换:", self.perspective_var, 0.0, 1.0, 0.5),
-            ("色调变化:", self.augment_hsv_h_var, 0.0, 0.1, 0.015),
-            ("饱和变化:", self.augment_hsv_s_var, 0.0, 1.0, 0.7),
-            ("亮度变化:", self.augment_hsv_v_var, 0.0, 1.0, 0.4),
+            ("augment_scale", "缩放增强:", self.augment_scale_var, 0.0, 1.0, 0.5, self.augment_scale_active_var),
+            ("augment_fliplr", "水平翻转:", self.augment_fliplr_var, 0.0, 1.0, 0.5, self.augment_fliplr_active_var),
+            ("augment_flipud", "垂直翻转:", self.flipud_var, 0.0, 1.0, 0.5, self.augment_flipud_active_var),
+            ("augment_perspective", "透视变换:", self.perspective_var, 0.0, 1.0, 0.5, self.augment_perspective_active_var),
+            ("augment_hsv_h", "色调变化:", self.augment_hsv_h_var, 0.0, 0.1, 0.015, self.augment_hsv_h_active_var),
+            ("augment_hsv_s", "饱和变化:", self.augment_hsv_s_var, 0.0, 1.0, 0.7, self.augment_hsv_s_active_var),
+            ("augment_hsv_v", "亮度变化:", self.augment_hsv_v_var, 0.0, 1.0, 0.4, self.augment_hsv_v_active_var),
         ]
         
         self.augment_sliders = {}
         self.augment_active_vars = {}
         
-        for i, (label, var, from_, to, default) in enumerate(augment_configs):
+        for i, (key, label, var, from_, to, default, active_var) in enumerate(augment_configs):
             # 增加字体大小从9改为11，改善可读性
             ttk.Label(frame, text=label, width=10, font=('Arial', 11)).grid(row=i, column=0, sticky=tk.W, pady=5)
             
@@ -742,12 +761,11 @@ class MainWindow:
             value_label = ttk.Label(slider_frame, text=f"{var.get():.3f}", width=6, font=('Arial', 10))
             value_label.grid(row=0, column=1, padx=(5, 0))
             
-            active_var = tk.BooleanVar(value=True)
             chk = ttk.Checkbutton(slider_frame, text="启用", variable=active_var, width=5)
             chk.grid(row=0, column=2, padx=(5, 0))
             
             self.augment_sliders[label] = (scale, value_label)
-            self.augment_active_vars[label] = active_var
+            self.augment_active_vars[key] = active_var
             
             # 绑定数值更新
             def update_value(*args, v=var, lbl=value_label):

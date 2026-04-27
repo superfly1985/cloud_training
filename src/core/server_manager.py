@@ -4,7 +4,7 @@ import shlex
 import stat
 import paramiko
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from scp import SCPClient
 
 
@@ -195,7 +195,7 @@ class ServerManager:
         except Exception as e:
             return False, str(e)
 
-    def upload_dir(self, local_dir, remote_dir, progress_callback=None, log_callback=None):
+    def upload_dir(self, local_dir, remote_dir, progress_callback=None, log_callback=None, stop_callback=None):
         """递归上传目录 - 增强版（跳过相同文件 + 并发优化）"""
         ok, msg = self.ensure_connected()
         if not ok:
@@ -266,8 +266,13 @@ class ServerManager:
             # 记录失败列表
             fail_list = []
 
-            # 动态调整并发数
-            max_workers = self._MAX_UPLOAD_WORKERS
+            # 动态调整并发数（可被配置覆盖）
+            upload_cfg = self.config_manager.config.get("upload", {}) if self.config_manager else {}
+            max_workers_cfg = int(upload_cfg.get("max_workers", self._MAX_UPLOAD_WORKERS) or self._MAX_UPLOAD_WORKERS)
+            max_workers_cfg = max(1, min(max_workers_cfg, 32))
+            retry_times = int(upload_cfg.get("retry_times", 3) or 3)
+            retry_times = max(0, min(retry_times, 10))
+            max_workers = max_workers_cfg
             if total_upload < 10:
                 max_workers = min(max_workers, 3)
             
@@ -276,7 +281,9 @@ class ServerManager:
 
             def upload_worker(local_file_path, rel_path):
                 remote_file_path = posixpath.join(remote_dir, rel_path)
-                retry = 3 # 增加重试次数
+                if stop_callback and stop_callback():
+                    return False, "上传已停止", rel_path
+                retry = retry_times
                 while retry >= 0:
                     try:
                         # 使用锁确保重连时的线程安全
@@ -300,17 +307,30 @@ class ServerManager:
                         time.sleep(2) # 增加重试间隔
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(upload_worker, lp, rp): rp for lp, rp in files_to_upload}
-                for future in as_completed(futures):
-                    success, err, rel = future.result()
-                    uploaded_count += 1
-                    if progress_callback:
-                        # 进度条显示相对于总本地文件的进度
-                        progress_callback(uploaded_count + skip_count, total_local, rel)
-                    if not success:
-                        fail_list.append((rel, err))
-                        if log_callback:
-                            log_callback(f"上传失败 ({rel}): {err}")
+                pending = {executor.submit(upload_worker, lp, rp) for lp, rp in files_to_upload}
+                while pending:
+                    if stop_callback and stop_callback():
+                        for f in pending:
+                            f.cancel()
+                        return False, f"上传已停止（已完成 {uploaded_count + skip_count}/{total_local}）"
+
+                    done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+                    if not done:
+                        continue
+
+                    for future in done:
+                        success, err, rel = future.result()
+                        uploaded_count += 1
+                        if progress_callback:
+                            # 进度条显示相对于总本地文件的进度
+                            progress_callback(uploaded_count + skip_count, total_local, rel)
+                        if not success:
+                            # 主动停止不计为失败
+                            if "已停止" in str(err):
+                                continue
+                            fail_list.append((rel, err))
+                            if log_callback:
+                                log_callback(f"上传失败 ({rel}): {err}")
 
             if fail_list:
                 return False, f"部分文件上传失败: {len(fail_list)} 个"
