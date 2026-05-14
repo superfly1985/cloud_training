@@ -49,10 +49,10 @@
     <div class="main-wrapper" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
       <header class="top-bar" role="banner">
         <div class="top-bar-left">
-          <span class="status-indicator" :class="systemStatus.status === 'ready' ? 'status-ok' : 'status-warn'"
-                :aria-label="'系统状态: ' + systemStatus.statusText">
+          <span class="status-indicator" :class="envFixing ? 'status-warn' : envHasFailures ? 'status-error' : 'status-ok'"
+                :aria-label="'系统状态: ' + (envFixing ? '环境修复中…' : envHasFailures ? '环境缺失' : systemStatus.statusText)">
           </span>
-          <span class="status-text">{{ systemStatus.statusText }}</span>
+          <span class="status-text">{{ envFixing ? '环境修复中…' : envHasFailures ? '环境缺失' : systemStatus.statusText }}</span>
         </div>
         <div class="top-bar-right">
           <span class="top-stat" aria-label="GPU 利用率">

@@ -81,6 +81,10 @@ var API = (function () {
       return request("DELETE", "/datasets/" + datasetId + "/images", { image_ids: imageIds });
     },
 
+    getImageLabels: function (datasetId, filename) {
+      return request("GET", "/datasets/" + datasetId + "/images/" + encodeURIComponent(filename) + "/labels");
+    },
+
     getTrainingTasks: function () {
       return request("GET", "/training");
     },

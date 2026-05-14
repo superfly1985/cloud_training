@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import zipfile
+import yaml
 
 from app.models.database import get_connection, now_iso
 from app.utils.logger import get_logger
@@ -14,12 +15,20 @@ def list_datasets() -> list:
     rows = conn.execute("SELECT * FROM datasets WHERE status='active' ORDER BY created_at DESC").fetchall()
     result = []
     for r in rows:
+        raw_classes = safe_json_loads(r["classes"])
+        name_map = get_class_names(r["id"])
+        if name_map:
+            resolved = []
+            for c in raw_classes:
+                resolved.append({"id": str(c), "name": name_map.get(str(c), str(c))})
+        else:
+            resolved = [{"id": str(c), "name": str(c)} for c in raw_classes]
         result.append({
             "id": r["id"],
             "name": r["name"],
             "image_count": r["image_count"],
             "annotated_count": r["annotated_count"],
-            "classes": safe_json_loads(r["classes"]),
+            "classes": resolved,
             "total_size": r["total_size"],
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
@@ -32,12 +41,20 @@ def get_dataset(ds_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM datasets WHERE id=?", (ds_id,)).fetchone()
     if not row:
         return None
+    raw_classes = safe_json_loads(row["classes"])
+    name_map = get_class_names(ds_id)
+    if name_map:
+        resolved = []
+        for c in raw_classes:
+            resolved.append({"id": str(c), "name": name_map.get(str(c), str(c))})
+    else:
+        resolved = [{"id": str(c), "name": str(c)} for c in raw_classes]
     return {
         "id": row["id"],
         "name": row["name"],
         "image_count": row["image_count"],
         "annotated_count": row["annotated_count"],
-        "classes": safe_json_loads(row["classes"]),
+        "classes": resolved,
         "total_size": row["total_size"],
         "split_ratio": row["split_ratio"],
         "created_at": row["created_at"],
@@ -196,6 +213,15 @@ def import_zip(ds_id: str, zip_path: str) -> dict:
                 )
                 count += 1
 
+    for root, dirs, files in os.walk(temp_dir):
+        for f in files:
+            if f.lower() in ("dataset.yaml", "dataset.yml", "data.yaml", "data.yml"):
+                src = os.path.join(root, f)
+                dst = os.path.join(ds_dir, "dataset.yaml")
+                if not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+                break
+
     shutil.rmtree(temp_dir, ignore_errors=True)
     _refresh_dataset_stats(ds_id)
     conn.commit()
@@ -247,3 +273,62 @@ def _refresh_dataset_stats(ds_id: str):
         "UPDATE datasets SET image_count=?, annotated_count=?, classes=?, total_size=?, updated_at=? WHERE id=?",
         (img_count, ann_count, safe_json_dumps(sorted(classes_set)), total_size, now, ds_id),
     )
+
+
+def get_class_names(ds_id: str) -> dict:
+    ds_dir = os.path.join(get_data_dir("datasets_path"), ds_id)
+
+    yaml_path = os.path.join(ds_dir, "dataset.yaml")
+    if os.path.exists(yaml_path):
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                content = yaml.safe_load(f)
+            if content and "names" in content:
+                names = content["names"]
+                if isinstance(names, dict):
+                    return {str(k): str(v) for k, v in names.items()}
+                if isinstance(names, list):
+                    return {str(i): str(v) for i, v in enumerate(names)}
+        except Exception:
+            pass
+
+    conn = get_connection()
+    row = conn.execute("SELECT classes FROM datasets WHERE id=?", (ds_id,)).fetchone()
+    if row:
+        classes = safe_json_loads(row["classes"])
+        return {str(c): str(c) for c in classes}
+
+    return {}
+
+
+def get_image_labels(ds_id: str, filename: str) -> list:
+    ds_dir = os.path.join(get_data_dir("datasets_path"), ds_id)
+    base = os.path.splitext(filename)[0]
+    lbl_path = os.path.join(ds_dir, "labels", base + ".txt")
+
+    if not os.path.exists(lbl_path):
+        return []
+
+    class_names = get_class_names(ds_id)
+    labels = []
+
+    with open(lbl_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                class_id = parts[0]
+                x_center = float(parts[1])
+                y_center = float(parts[2])
+                width = float(parts[3])
+                height = float(parts[4])
+                class_name = class_names.get(str(class_id), class_id)
+                labels.append({
+                    "class_id": class_id,
+                    "class_name": class_name,
+                    "x_center": x_center,
+                    "y_center": y_center,
+                    "width": width,
+                    "height": height,
+                })
+
+    return labels

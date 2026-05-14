@@ -1,3 +1,22 @@
+var BBOX_COLORS = [
+  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#DDA0DD',
+  '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9', '#F8C471',
+  '#82E0AA', '#F1948A', '#85929E', '#AED6F1', '#E59866',
+  '#C39BD3', '#7FB3D8', '#76D7C4', '#F0B27A', '#FF3838',
+];
+
+function computeBBoxColor(classId) {
+  var idx = typeof classId === 'number' ? classId : parseInt(classId, 10);
+  if (isNaN(idx)) {
+    var hash = 0;
+    for (var i = 0; i < String(classId).length; i++) {
+      hash = String(classId).charCodeAt(i) + ((hash << 5) - hash);
+    }
+    idx = Math.abs(hash);
+  }
+  return BBOX_COLORS[idx % BBOX_COLORS.length];
+}
+
 app.component("dataset-tab", {
   template: `
     <div class="fade-in-up">
@@ -53,7 +72,7 @@ app.component("dataset-tab", {
                 <td class="numeric">{{ ds.image_count }}</td>
                 <td class="numeric">{{ ds.annotated_count }}</td>
                 <td>
-                  <span v-for="cls in ds.classes.slice(0, 3)" :key="cls" class="badge badge-secondary" style="margin-right: 4px;">{{ cls }}</span>
+                  <span v-for="cls in ds.classes.slice(0, 3)" :key="cls.id" class="badge" :style="{ background: getBBoxColor(cls.id), color: '#fff', marginRight: '4px' }">{{ cls.name }}</span>
                   <span v-if="ds.classes.length > 3" class="badge badge-secondary">+{{ ds.classes.length - 3 }}</span>
                 </td>
                 <td class="numeric">{{ formatSize(ds.total_size) }}</td>
@@ -91,7 +110,7 @@ app.component("dataset-tab", {
       <div v-if="selectedDataset" class="card">
         <div class="card-title" style="display: flex; align-items: center; justify-content: space-between;">
           <span>{{ selectedDataset.name }} - 图片浏览</span>
-          <button class="btn btn-sm btn-ghost" @click="selectedDataset = null">关闭</button>
+          <button class="btn btn-sm btn-ghost" @click="closeDataset">关闭</button>
         </div>
         <div v-if="imagesLoading" style="padding: 40px; text-align: center; color: var(--color-text-muted);" aria-live="polite">加载中…</div>
         <div v-else class="dataset-layout">
@@ -126,8 +145,14 @@ app.component("dataset-tab", {
             </div>
             <div v-else class="preview-content">
               <div class="preview-image-box">
-                <div class="preview-aspect-ratio">
-                  <img v-if="previewImage.thumbnail_url" :src="previewImage.thumbnail_url" :alt="previewImage.filename" width="640" height="480" loading="lazy" style="width: 100%; height: 100%; object-fit: contain;">
+                <div class="preview-aspect-ratio" ref="previewContainer">
+                  <template v-if="previewImage.thumbnail_url">
+                    <img :src="previewImage.thumbnail_url" :alt="previewImage.filename"
+                         @load="onPreviewImageLoad"
+                         ref="previewImg"
+                         style="width: 100%; height: 100%; object-fit: contain;">
+                    <canvas ref="bboxCanvas" class="bbox-canvas"></canvas>
+                  </template>
                   <div v-else class="preview-placeholder" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
                     <i class="bi bi-image" aria-hidden="true" style="font-size: 48px;"></i>
                   </div>
@@ -138,6 +163,13 @@ app.component("dataset-tab", {
                 <div class="preview-meta">
                   {{ previewImage.width }} × {{ previewImage.height }} · {{ formatSize(previewImage.size) }} ·
                   <span :class="previewImage.annotated ? 'text-success' : 'text-muted'">{{ previewImage.annotated ? '已标注' : '未标注' }}</span>
+                  <span v-if="imageLabels.length > 0"> · {{ imageLabels.length }} 个标注</span>
+                </div>
+                <div v-if="classNamesList.length > 0" class="bbox-legend">
+                  <span v-for="item in classNamesList" :key="item.id" class="bbox-legend-item">
+                    <span class="bbox-legend-color" :style="{ background: item.color }"></span>
+                    {{ item.name }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -186,6 +218,9 @@ app.component("dataset-tab", {
       selectedImageIds: [],
       previewImage: null,
       lastClickedIndex: -1,
+      imageLabels: [],
+      classColorMap: {},
+      classNamesList: [],
     };
   },
   computed: {
@@ -239,6 +274,9 @@ app.component("dataset-tab", {
       if (base.length <= 9) return name;
       return base.substring(0, 6) + "***" + base.substring(base.length - 3) + ext;
     },
+    getBBoxColor: function (classId) {
+      return computeBBoxColor(classId);
+    },
     formatSize: function (bytes) {
       return API.formatBytes(bytes);
     },
@@ -258,13 +296,24 @@ app.component("dataset-tab", {
       this.imgPage = 1;
       this.selectedImageIds = [];
       this.previewImage = null;
+      this.imageLabels = [];
+      this.classColorMap = {};
+      this.classNamesList = [];
       this.loadImages();
+    },
+    closeDataset: function () {
+      this.selectedDataset = null;
+      this.imageLabels = [];
+      this.classColorMap = {};
+      this.classNamesList = [];
     },
     loadImages: function () {
       if (!this.selectedDataset) return;
       var self = this;
       self.imagesLoading = true;
       self.previewImage = null;
+      self.imageLabels = [];
+      self.classNamesList = [];
       API.getDatasetImages(self.selectedDataset.id, self.imgPage, self.imgPageSize).then(function (res) {
         self.images = res.data.images;
         self.imgTotal = res.data.total;
@@ -313,8 +362,141 @@ app.component("dataset-tab", {
         return;
       }
       this.lastClickedIndex = index;
+      this.imageLabels = [];
+      this.classNamesList = [];
+      this.clearCanvas();
       var img = this.images.find(function (im) { return im.id === id; });
-      if (img) this.previewImage = img;
+      if (img) {
+        this.previewImage = img;
+        this.loadImageLabels(img);
+      }
+    },
+    onPreviewImageLoad: function () {
+      this.drawBBoxes();
+    },
+    loadImageLabels: function (img) {
+      var self = this;
+      self.imageLabels = [];
+      if (!img || !img.annotated) {
+        self.classNamesList = [];
+        self.$nextTick(function () {
+          self.clearCanvas();
+        });
+        return;
+      }
+      API.getImageLabels(self.selectedDataset.id, img.filename).then(function (res) {
+        var data = res.data;
+        self.imageLabels = data.labels || [];
+        self._buildClassColorMap(data.class_names || {});
+        self.$nextTick(function () {
+          self.drawBBoxes();
+        });
+      }).catch(function () {
+        self.imageLabels = [];
+        self.classNamesList = [];
+        self.clearCanvas();
+      });
+    },
+    _buildClassColorMap: function (classNames) {
+      var self = this;
+      var map = {};
+      var list = [];
+      var keys = Object.keys(classNames);
+      keys.sort(function (a, b) {
+        var na = parseInt(a, 10);
+        var nb = parseInt(b, 10);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        return a.localeCompare(b);
+      });
+      keys.forEach(function (key) {
+        var color = computeBBoxColor(key);
+        map[key] = color;
+        list.push({ id: key, name: classNames[key], color: color });
+      });
+      self.classColorMap = map;
+      self.classNamesList = list;
+    },
+    clearCanvas: function () {
+      var canvas = this.$refs.bboxCanvas;
+      if (!canvas) return;
+      var ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.style.display = "none";
+    },
+    drawBBoxes: function () {
+      var self = this;
+      var canvas = self.$refs.bboxCanvas;
+      var img = self.$refs.previewImg;
+      var container = self.$refs.previewContainer;
+      if (!canvas || !img || !container) return;
+
+      var labels = self.imageLabels;
+      if (!labels || labels.length === 0) {
+        self.clearCanvas();
+        return;
+      }
+
+      var containerRect = container.getBoundingClientRect();
+      var containerW = containerRect.width;
+      var containerH = containerRect.height;
+      var imgW = img.naturalWidth || img.width;
+      var imgH = img.naturalHeight || img.height;
+
+      if (!imgW || !imgH || !containerW || !containerH) return;
+
+      var scale = Math.min(containerW / imgW, containerH / imgH);
+      var displayW = imgW * scale;
+      var displayH = imgH * scale;
+      var offsetX = (containerW - displayW) / 2;
+      var offsetY = (containerH - displayH) / 2;
+
+      var dpr = window.devicePixelRatio || 1;
+      canvas.width = displayW * dpr;
+      canvas.height = displayH * dpr;
+      canvas.style.width = displayW + "px";
+      canvas.style.height = displayH + "px";
+      canvas.style.left = offsetX + "px";
+      canvas.style.top = offsetY + "px";
+      canvas.style.display = "block";
+
+      var ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, displayW, displayH);
+
+      var lineWidth = Math.max(2, displayW / 300);
+
+      labels.forEach(function (label) {
+        var x = (label.x_center - label.width / 2) * displayW;
+        var y = (label.y_center - label.height / 2) * displayH;
+        var w = label.width * displayW;
+        var h = label.height * displayH;
+
+        var color = self.classColorMap[label.class_id] || computeBBoxColor(label.class_id);
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.strokeRect(x, y, w, h);
+
+        var text = label.class_name;
+        var fontSize = Math.max(10, Math.min(16, displayW / 40));
+        ctx.font = "bold " + fontSize + "px 'Segoe UI', sans-serif";
+        var textMetrics = ctx.measureText(text);
+        var textW = textMetrics.width;
+        var textH = fontSize + 4;
+        var padding = 3;
+
+        var labelY = y - textH - 2;
+        if (labelY < 0) labelY = y;
+
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(x, labelY, textW + padding * 2, textH);
+        ctx.strokeRect(x, labelY, textW + padding * 2, textH);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(text, x + padding, labelY + fontSize - 1);
+      });
     },
     deleteSelectedImages: function () {
       var self = this;
@@ -351,5 +533,17 @@ app.component("dataset-tab", {
   },
   mounted: function () {
     this.load();
+    var self = this;
+    this._resizeHandler = function () {
+      if (self.previewImage && self.imageLabels.length > 0) {
+        self.drawBBoxes();
+      }
+    };
+    window.addEventListener("resize", this._resizeHandler);
+  },
+  beforeUnmount: function () {
+    if (this._resizeHandler) {
+      window.removeEventListener("resize", this._resizeHandler);
+    }
   },
 });

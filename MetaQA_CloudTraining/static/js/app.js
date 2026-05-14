@@ -38,6 +38,8 @@ var app = Vue.createApp({
         diskUsage: 67,
         runningTasks: 2,
       },
+      envFixing: false,
+      envHasFailures: false,
       showCreateDatasetModal: false,
       showMergeDatasetModal: false,
       showNewTrainingModal: false,
@@ -91,6 +93,14 @@ var app = Vue.createApp({
           runningTasks: d.running_tasks,
         };
       });
+      if (!self.envFixing) {
+        API.getSystemChecks().then(function (res) {
+          if (res && res.data && res.data.checks) {
+            var hasFail = res.data.checks.some(function (c) { return c.status === "fail"; });
+            self.envHasFailures = hasFail;
+          }
+        });
+      }
     },
     confirm: function (config) {
       var self = this;

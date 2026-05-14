@@ -750,6 +750,27 @@ tr:hover td {
   background: var(--color-success);
 }
 
+.upload-progress-panel {
+  padding: 16px 0;
+}
+
+.upload-progress-bar {
+  height: 12px;
+  margin-bottom: 10px;
+}
+
+.upload-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 4px;
+}
+
+.modal-overlay.nobgclose {
+  cursor: default;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1069,10 +1090,17 @@ tr:hover td {
   position: relative;
 }
 
-.preview-aspect-ratio > * {
+.preview-aspect-ratio > img,
+.preview-aspect-ratio > .preview-placeholder {
   position: absolute;
   top: 0;
   left: 0;
+}
+
+.bbox-canvas {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
 }
 
 .preview-info {
@@ -1089,6 +1117,30 @@ tr:hover td {
 .preview-meta {
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+.bbox-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.bbox-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.bbox-legend-color {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
 
 .pagination-bar {

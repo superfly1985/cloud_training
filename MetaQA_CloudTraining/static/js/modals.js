@@ -36,41 +36,60 @@ app.component("confirm-modal", {
 
 app.component("create-dataset-modal", {
   template: `
-    <div class="modal-overlay" @click.self="$emit('close')" role="dialog" aria-modal="true" aria-label="创建数据集">
+    <div class="modal-overlay" :class="{ nobgclose: uploading }" @click.self="canClose ? $emit('close') : null" role="dialog" aria-modal="true" aria-label="创建数据集">
       <div class="modal-content modal-md">
         <div class="modal-header">
           <h2>创建数据集</h2>
-          <button class="modal-close" @click="$emit('close')" aria-label="关闭">
+          <button v-if="!uploading" class="modal-close" @click="$emit('close')" aria-label="关闭">
             <i class="bi bi-x-lg" aria-hidden="true"></i>
           </button>
         </div>
         <div class="modal-body">
           <p style="font-size: 12px; color: var(--color-text-muted); margin-bottom: 16px;">* 为必填项</p>
-          <div class="form-group">
+          <div class="form-group" v-if="!uploading">
             <label for="ds-name">数据集名称 <span style="color: var(--color-danger);">*</span></label>
             <input id="ds-name" type="text" class="form-control" v-model="name" placeholder="请输入数据集名称…"
-                   :class="{ 'is-invalid': errors.name }" @input="errors.name = ''" autocomplete="off">
+                   :class="{ 'is-invalid': errors.name }" @input="errors.name = ''" autocomplete="off" :disabled="uploading">
             <div v-if="errors.name" class="form-error" aria-live="polite">{{ errors.name }}</div>
           </div>
-          <div class="form-group">
+          <div class="form-group" v-if="!uploading">
             <label for="ds-zip">上传 ZIP 文件 <span style="color: var(--color-danger);">*</span></label>
             <input id="ds-zip" type="file" class="form-control" accept=".zip" @change="onFileChange"
-                   :class="{ 'is-invalid': errors.file }">
+                   :class="{ 'is-invalid': errors.file }" :disabled="uploading">
             <div class="form-hint">支持包含图片和标签的 ZIP 文件，最大 2 GB</div>
             <div v-if="errors.file" class="form-error" aria-live="polite">{{ errors.file }}</div>
             <div v-if="fileName" style="margin-top: 8px; font-size: 13px; color: var(--color-success);">
               <i class="bi bi-check-circle" aria-hidden="true"></i> {{ fileName }}
             </div>
           </div>
-          <div class="form-hint" style="margin-top: 12px; padding: 10px 12px; background: rgba(37,99,235,0.05); border-radius: var(--radius-sm);">
+          <div v-if="!uploading" class="form-hint" style="margin-top: 12px; padding: 10px 12px; background: rgba(37,99,235,0.05); border-radius: var(--radius-sm);">
             训练/验证集分割将在创建训练任务时配置
+          </div>
+
+          <div v-if="uploading" class="upload-progress-panel">
+            <div style="font-size: 14px; font-weight: 500; margin-bottom: 12px;">
+              <span class="spinner"></span> 正在上传 {{ fileName }}
+            </div>
+            <div class="progress-bar upload-progress-bar">
+              <div class="progress-fill" :style="{ width: uploadPercent + '%' }"></div>
+            </div>
+            <div class="upload-stats">
+              <span>{{ uploadPercent }}%</span>
+              <span>{{ formatSpeed(uploadSpeed) }}</span>
+            </div>
+            <div class="upload-stats">
+              <span>{{ formatSize(uploadedBytes) }} / {{ formatSize(fileSize) }}</span>
+              <span>剩余约 {{ etaText }}</span>
+            </div>
+            <div v-if="uploadError" class="form-error" style="margin-top: 12px;">{{ uploadError }}</div>
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost" @click="$emit('close')">取消</button>
-          <button class="btn btn-primary" @click="submit" :disabled="submitting">
+          <button v-if="!uploading" class="btn btn-ghost" @click="$emit('close')">取消</button>
+          <button v-if="uploading" class="btn btn-ghost btn-danger" @click="cancelUpload">取消上传</button>
+          <button class="btn btn-primary" @click="submit" :disabled="submitting || uploading">
             <span v-if="submitting" class="spinner"></span>
-            {{ submitting ? '创建中…' : '创建' }}
+            {{ uploading ? '上传中…' : submitting ? '创建中…' : '创建' }}
           </button>
         </div>
       </div>
@@ -81,16 +100,41 @@ app.component("create-dataset-modal", {
       name: "",
       file: null,
       fileName: "",
+      fileSize: 0,
       errors: { name: "", file: "" },
       submitting: false,
+      uploading: false,
+      uploadPercent: 0,
+      uploadedBytes: 0,
+      uploadSpeed: 0,
+      uploadError: "",
+      etaText: "…",
+      _cancelUpload: false,
+      _speedSamples: [],
+      _lastTick: 0,
+      _lastBytes: 0,
     };
   },
+  computed: {
+    canClose: function () {
+      return !this.uploading;
+    },
+  },
   methods: {
+    formatSize: function (bytes) {
+      return API.formatBytes(bytes);
+    },
+    formatSpeed: function (bps) {
+      if (bps < 1024) return bps.toFixed(0) + " B/s";
+      if (bps < 1048576) return (bps / 1024).toFixed(1) + " KB/s";
+      return (bps / 1048576).toFixed(1) + " MB/s";
+    },
     onFileChange: function (e) {
       var f = e.target.files[0];
       if (f) {
         this.file = f;
         this.fileName = f.name;
+        this.fileSize = f.size;
         this.errors.file = "";
       }
     },
@@ -108,20 +152,121 @@ app.component("create-dataset-modal", {
 
       var self = this;
       self.submitting = true;
-      API.uploadDataset(self.name, 0.8, self.file).then(function (res) {
+      self._doChunkedUpload(self.name, self.file, null);
+    },
+    cancelUpload: function () {
+      this._cancelUpload = true;
+    },
+    _doChunkedUpload: function (dsName, file, targetDsId) {
+      var self = this;
+      var chunkSize = 5 * 1024 * 1024;
+      var totalSize = file.size;
+      var totalChunks = Math.ceil(totalSize / chunkSize);
+
+      self.uploading = true;
+      self.uploadPercent = 0;
+      self.uploadedBytes = 0;
+      self.uploadSpeed = 0;
+      self.uploadError = "";
+      self.etaText = "计算中…";
+      self._cancelUpload = false;
+      self._speedSamples = [];
+      self._lastTick = 0;
+      self._lastBytes = 0;
+
+      API.uploadInit(file.name, totalSize, chunkSize).then(function (res) {
+        if (res.code !== 0 || self._cancelUpload) {
+          self.uploading = false;
+          self.submitting = false;
+          self.uploadError = res.message || "初始化上传失败";
+          return;
+        }
+        var sessionId = res.data.session_id;
+        self._lastTick = Date.now();
+        self._lastBytes = 0;
+        self._uploadChunks(sessionId, file, 0, totalChunks, chunkSize, targetDsId);
+      }).catch(function (err) {
+        self.uploading = false;
+        self.submitting = false;
+        self.uploadError = "网络错误: " + (err.message || "初始化失败");
+      });
+    },
+    _uploadChunks: function (sessionId, file, idx, total, chunkSize, targetDsId) {
+      var self = this;
+      if (self._cancelUpload) {
+        self.uploading = false;
+        self.submitting = false;
+        return;
+      }
+
+      if (idx >= total) {
+        self._finishUpload(sessionId, targetDsId);
+        return;
+      }
+
+      var start = idx * chunkSize;
+      var end = Math.min(start + chunkSize, file.size);
+      var blob = file.slice(start, end);
+
+      API.uploadChunk(sessionId, idx, blob).then(function (res) {
+        if (res.code !== 0) {
+          self.uploading = false;
+          self.submitting = false;
+          self.uploadError = res.message || "上传分片失败";
+          return;
+        }
+
+        var now = Date.now();
+        self.uploadedBytes = Math.min(end, file.size);
+        self.uploadPercent = Math.min(100, Math.round((self.uploadedBytes / file.size) * 100));
+
+        var elapsed = (now - self._lastTick) / 1000;
+        var bytesDelta = self.uploadedBytes - self._lastBytes;
+        if (elapsed > 0 && bytesDelta > 0) {
+          var instantSpeed = bytesDelta / elapsed;
+          self._speedSamples.push(instantSpeed);
+          if (self._speedSamples.length > 8) self._speedSamples.shift();
+          var sum = 0;
+          for (var i = 0; i < self._speedSamples.length; i++) sum += self._speedSamples[i];
+          self.uploadSpeed = sum / self._speedSamples.length;
+          self._lastTick = now;
+          self._lastBytes = self.uploadedBytes;
+
+          var remaining = file.size - self.uploadedBytes;
+          var etaSec = self.uploadSpeed > 0 ? Math.ceil(remaining / self.uploadSpeed) : 0;
+          if (etaSec < 60) self.etaText = etaSec + " 秒";
+          else if (etaSec < 3600) self.etaText = Math.floor(etaSec / 60) + " 分 " + (etaSec % 60) + " 秒";
+          else self.etaText = Math.floor(etaSec / 3600) + " 时 " + Math.floor((etaSec % 3600) / 60) + " 分";
+        }
+
+        self._uploadChunks(sessionId, file, idx + 1, total, chunkSize, targetDsId);
+      }).catch(function (err) {
+        self.uploading = false;
+        self.submitting = false;
+        self.uploadError = "网络错误: " + (err.message || "上传中断");
+      });
+    },
+    _finishUpload: function (sessionId, targetDsId) {
+      var self = this;
+      API.uploadComplete(sessionId, targetDsId, targetDsId ? "merge" : "create").then(function (res) {
+        self.uploading = false;
         self.submitting = false;
         if (res.code !== 0) {
-          alert(res.message || "上传失败");
+          self.uploadError = res.message || "导入失败";
           return;
         }
         self.$emit("close");
+      }).catch(function (err) {
+        self.uploading = false;
+        self.submitting = false;
+        self.uploadError = "导入失败: " + (err.message || "请重试");
       });
     },
   },
   mounted: function () {
     var self = this;
     this._keyHandler = function (e) {
-      if (e.key === "Escape") self.$emit("close");
+      if (e.key === "Escape" && !self.uploading) self.$emit("close");
     };
     document.addEventListener("keydown", this._keyHandler);
   },
@@ -132,36 +277,55 @@ app.component("create-dataset-modal", {
 
 app.component("merge-dataset-modal", {
   template: `
-    <div class="modal-overlay" @click.self="$emit('close')" role="dialog" aria-modal="true" aria-label="合并新增数据">
+    <div class="modal-overlay" :class="{ nobgclose: uploading }" @click.self="canClose ? $emit('close') : null" role="dialog" aria-modal="true" aria-label="合并新增数据">
       <div class="modal-content modal-md">
         <div class="modal-header">
           <h2>合并新增数据</h2>
-          <button class="modal-close" @click="$emit('close')" aria-label="关闭">
+          <button v-if="!uploading" class="modal-close" @click="$emit('close')" aria-label="关闭">
             <i class="bi bi-x-lg" aria-hidden="true"></i>
           </button>
         </div>
         <div class="modal-body">
-          <div class="form-group">
+          <div class="form-group" v-if="!uploading">
             <label for="merge-target">目标数据集 <span style="color: var(--color-danger);">*</span></label>
-            <select id="merge-target" class="form-control" v-model="targetId">
+            <select id="merge-target" class="form-control" v-model="targetId" :disabled="uploading">
               <option value="">请选择目标数据集…</option>
               <option v-for="ds in datasets" :key="ds.id" :value="ds.id">{{ ds.name }} ({{ ds.image_count }} 张)</option>
             </select>
           </div>
-          <div class="form-group">
+          <div class="form-group" v-if="!uploading">
             <label for="merge-zip">上传新增数据 ZIP <span style="color: var(--color-danger);">*</span></label>
-            <input id="merge-zip" type="file" class="form-control" accept=".zip" @change="onFileChange">
+            <input id="merge-zip" type="file" class="form-control" accept=".zip" @change="onFileChange" :disabled="uploading">
             <div class="form-hint">新增数据将合并到目标数据集中</div>
             <div v-if="fileName" style="margin-top: 8px; font-size: 13px; color: var(--color-success);">
               <i class="bi bi-check-circle" aria-hidden="true"></i> {{ fileName }}
             </div>
           </div>
+
+          <div v-if="uploading" class="upload-progress-panel">
+            <div style="font-size: 14px; font-weight: 500; margin-bottom: 12px;">
+              <span class="spinner"></span> 正在上传 {{ fileName }}
+            </div>
+            <div class="progress-bar upload-progress-bar">
+              <div class="progress-fill" :style="{ width: uploadPercent + '%' }"></div>
+            </div>
+            <div class="upload-stats">
+              <span>{{ uploadPercent }}%</span>
+              <span>{{ formatSpeed(uploadSpeed) }}</span>
+            </div>
+            <div class="upload-stats">
+              <span>{{ formatSize(uploadedBytes) }} / {{ formatSize(fileSize) }}</span>
+              <span>剩余约 {{ etaText }}</span>
+            </div>
+            <div v-if="uploadError" class="form-error" style="margin-top: 12px;">{{ uploadError }}</div>
+          </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-ghost" @click="$emit('close')">取消</button>
-          <button class="btn btn-primary" @click="submit" :disabled="!targetId || !fileName || submitting">
+          <button v-if="!uploading" class="btn btn-ghost" @click="$emit('close')">取消</button>
+          <button v-if="uploading" class="btn btn-ghost btn-danger" @click="cancelUpload">取消上传</button>
+          <button class="btn btn-primary" @click="submit" :disabled="!targetId || !file || submitting || uploading">
             <span v-if="submitting" class="spinner"></span>
-            {{ submitting ? '合并中…' : '合并' }}
+            {{ uploading ? '上传中…' : submitting ? '合并中…' : '合并' }}
           </button>
         </div>
       </div>
@@ -171,22 +335,157 @@ app.component("merge-dataset-modal", {
     return {
       datasets: [],
       targetId: "",
+      file: null,
       fileName: "",
+      fileSize: 0,
       submitting: false,
+      uploading: false,
+      uploadPercent: 0,
+      uploadedBytes: 0,
+      uploadSpeed: 0,
+      uploadError: "",
+      etaText: "…",
+      _cancelUpload: false,
+      _speedSamples: [],
+      _lastTick: 0,
+      _lastBytes: 0,
     };
   },
+  computed: {
+    canClose: function () {
+      return !this.uploading;
+    },
+  },
   methods: {
+    formatSize: function (bytes) {
+      return API.formatBytes(bytes);
+    },
+    formatSpeed: function (bps) {
+      if (bps < 1024) return bps.toFixed(0) + " B/s";
+      if (bps < 1048576) return (bps / 1024).toFixed(1) + " KB/s";
+      return (bps / 1048576).toFixed(1) + " MB/s";
+    },
     onFileChange: function (e) {
-      var file = e.target.files[0];
-      if (file) this.fileName = file.name;
+      var f = e.target.files[0];
+      if (f) {
+        this.file = f;
+        this.fileName = f.name;
+        this.fileSize = f.size;
+      }
     },
     submit: function () {
+      if (!this.targetId || !this.file) return;
       var self = this;
       self.submitting = true;
-      setTimeout(function () {
+      self._doChunkedUpload(self.file, self.targetId);
+    },
+    cancelUpload: function () {
+      this._cancelUpload = true;
+    },
+    _doChunkedUpload: function (file, targetDsId) {
+      var self = this;
+      var chunkSize = 5 * 1024 * 1024;
+      var totalSize = file.size;
+      var totalChunks = Math.ceil(totalSize / chunkSize);
+
+      self.uploading = true;
+      self.uploadPercent = 0;
+      self.uploadedBytes = 0;
+      self.uploadSpeed = 0;
+      self.uploadError = "";
+      self.etaText = "计算中…";
+      self._cancelUpload = false;
+      self._speedSamples = [];
+      self._lastTick = 0;
+      self._lastBytes = 0;
+
+      API.uploadInit(file.name, totalSize, chunkSize).then(function (res) {
+        if (res.code !== 0 || self._cancelUpload) {
+          self.uploading = false;
+          self.submitting = false;
+          self.uploadError = res.message || "初始化上传失败";
+          return;
+        }
+        var sessionId = res.data.session_id;
+        self._lastTick = Date.now();
+        self._lastBytes = 0;
+        self._uploadChunks(sessionId, file, 0, totalChunks, chunkSize, targetDsId);
+      }).catch(function (err) {
+        self.uploading = false;
         self.submitting = false;
+        self.uploadError = "网络错误: " + (err.message || "初始化失败");
+      });
+    },
+    _uploadChunks: function (sessionId, file, idx, total, chunkSize, targetDsId) {
+      var self = this;
+      if (self._cancelUpload) {
+        self.uploading = false;
+        self.submitting = false;
+        return;
+      }
+
+      if (idx >= total) {
+        self._finishUpload(sessionId, targetDsId);
+        return;
+      }
+
+      var start = idx * chunkSize;
+      var end = Math.min(start + chunkSize, file.size);
+      var blob = file.slice(start, end);
+
+      API.uploadChunk(sessionId, idx, blob).then(function (res) {
+        if (res.code !== 0) {
+          self.uploading = false;
+          self.submitting = false;
+          self.uploadError = res.message || "上传分片失败";
+          return;
+        }
+
+        var now = Date.now();
+        self.uploadedBytes = Math.min(end, file.size);
+        self.uploadPercent = Math.min(100, Math.round((self.uploadedBytes / file.size) * 100));
+
+        var elapsed = (now - self._lastTick) / 1000;
+        var bytesDelta = self.uploadedBytes - self._lastBytes;
+        if (elapsed > 0 && bytesDelta > 0) {
+          var instantSpeed = bytesDelta / elapsed;
+          self._speedSamples.push(instantSpeed);
+          if (self._speedSamples.length > 8) self._speedSamples.shift();
+          var sum = 0;
+          for (var i = 0; i < self._speedSamples.length; i++) sum += self._speedSamples[i];
+          self.uploadSpeed = sum / self._speedSamples.length;
+          self._lastTick = now;
+          self._lastBytes = self.uploadedBytes;
+
+          var remaining = file.size - self.uploadedBytes;
+          var etaSec = self.uploadSpeed > 0 ? Math.ceil(remaining / self.uploadSpeed) : 0;
+          if (etaSec < 60) self.etaText = etaSec + " 秒";
+          else if (etaSec < 3600) self.etaText = Math.floor(etaSec / 60) + " 分 " + (etaSec % 60) + " 秒";
+          else self.etaText = Math.floor(etaSec / 3600) + " 时 " + Math.floor((etaSec % 3600) / 60) + " 分";
+        }
+
+        self._uploadChunks(sessionId, file, idx + 1, total, chunkSize, targetDsId);
+      }).catch(function (err) {
+        self.uploading = false;
+        self.submitting = false;
+        self.uploadError = "网络错误: " + (err.message || "上传中断");
+      });
+    },
+    _finishUpload: function (sessionId, targetDsId) {
+      var self = this;
+      API.uploadComplete(sessionId, targetDsId, "merge").then(function (res) {
+        self.uploading = false;
+        self.submitting = false;
+        if (res.code !== 0) {
+          self.uploadError = res.message || "合并失败";
+          return;
+        }
         self.$emit("close");
-      }, 1000);
+      }).catch(function (err) {
+        self.uploading = false;
+        self.submitting = false;
+        self.uploadError = "合并失败: " + (err.message || "请重试");
+      });
     },
   },
   mounted: function () {
@@ -195,7 +494,7 @@ app.component("merge-dataset-modal", {
       self.datasets = res.data.datasets;
     });
     this._keyHandler = function (e) {
-      if (e.key === "Escape") self.$emit("close");
+      if (e.key === "Escape" && !self.uploading) self.$emit("close");
     };
     document.addEventListener("keydown", this._keyHandler);
   },

@@ -135,6 +135,8 @@ app.component("system-tab", {
         function next() {
           if (i >= self.checks.length) {
             self.checking = false;
+            var hasFail = self.checks.some(function (c) { return c.status === "fail"; });
+            if (self.$root) self.$root.envHasFailures = hasFail;
             return;
           }
           self.checks[i].status = res.data.checks[i].status;
@@ -147,8 +149,10 @@ app.component("system-tab", {
     autoFix: function () {
       var self = this;
       self.fixing = true;
+      if (self.$root) self.$root.envFixing = true;
       API.fixSystem().then(function () {
         self.fixing = false;
+        if (self.$root) self.$root.envFixing = false;
         self.runChecks();
       });
     },

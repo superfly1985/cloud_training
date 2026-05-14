@@ -159,9 +159,9 @@ def _check_tflite() -> dict:
 def _check_disk_space() -> dict:
     disk = get_disk_info()
     avail = disk["disk_total_gb"] - disk["disk_used_gb"]
-    if avail > 50:
+    if avail > 10:
         return {"name": "磁盘空间", "status": "pass", "message": f"可用 {avail:.0f} GB", "auto_fixable": False}
-    return {"name": "磁盘空间", "status": "fail", "message": f"剩余空间不足: {avail:.0f} GB", "auto_fixable": False}
+    return {"name": "磁盘空间", "status": "fail", "message": f"剩余空间不足: {avail:.0f} GB (建议至少 10 GB)", "auto_fixable": False}
 
 
 def _check_datasets_dir() -> dict:
