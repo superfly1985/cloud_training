@@ -9,6 +9,7 @@ import ttkbootstrap as ttkb
 from src.ui.main_window import MainWindow
 from src.ui.file_manager_window import FileManagerWindow
 from src.ui.monitor_window import MonitorWindow
+from src.ui.model_list_window import ModelListWindow
 from src.core.config_manager import ConfigManager
 from src.core.server_manager import ServerManager
 from src.core.dataset_manager import DatasetManager
@@ -766,6 +767,7 @@ class Application:
             
             def finish():
                 self.ui.log_message("-" * 60)
+                self._end_server_operation("check_environment")
                 if report["errors"]:
                     self.ui.log_message(f"⚠ 发现 {len(report['errors'])} 个问题需要修复")
                     self.ui.btn_fix_env.config(state="normal")
@@ -775,7 +777,6 @@ class Application:
                     self.ui.btn_fix_env.config(state="disabled")
                     self._env_check_passed = True
                 self.ui.log_message("=" * 60)
-                self._end_server_operation("check_environment")
             
             self.root.after(0, finish)
             
@@ -937,6 +938,8 @@ class Application:
         if not self._begin_server_operation("upload_dataset", "上传数据集"):
             return
 
+        was_connected_before_upload = self.server_manager.is_connected
+
         remote_path = self.ui.remote_dataset_path_var.get().strip() or "/root/yolo_dataset"
         self._upload_running = True
         self._upload_stop_requested = False
@@ -950,11 +953,25 @@ class Application:
 
             def update():
                 self.ui.upload_progress_var.set(percent)
-                self.ui.upload_status_var.set(f"上传中: {current}/{total}")
-                self.ui.dataset_summary_var.set(f"当前文件: {rel_path}")
+                # 根据当前值判断是文件数还是字节数
+                if total > 1024 * 1024:  # 如果总大小超过 1MB，认为是字节数
+                    # 字节数显示
+                    current_mb = current / 1024 / 1024
+                    total_mb = total / 1024 / 1024
+                    if current_mb >= 1:
+                        self.ui.upload_status_var.set(f"上传中: {current_mb:.1f} MB / {total_mb:.1f} MB")
+                    else:
+                        self.ui.upload_status_var.set(f"上传中: {current / 1024:.1f} KB / {total_mb:.1f} MB")
+                else:
+                    # 文件数显示
+                    self.ui.upload_status_var.set(f"上传中: {current}/{total}")
+                self.ui.dataset_summary_var.set(f"当前: {rel_path}")
                 # 降低日志频率，每 10% 或 最后一个文件才打印
-                if current % max(1, total // 10) == 0 or current == total:
-                    self.ui.log_message(f"上传进度: {current}/{total} ({int(percent)}%)")
+                if int(percent) % 10 == 0 or current == total:
+                    if total > 1024 * 1024:
+                        self.ui.log_message(f"上传进度: {percent:.1f}% ({current_mb:.1f} / {total_mb:.1f} MB)")
+                    else:
+                        self.ui.log_message(f"上传进度: {current}/{total} ({int(percent)}%)")
 
             self.root.after(0, update)
 
@@ -966,6 +983,7 @@ class Application:
                 progress_callback=progress,
                 log_callback=lambda m: self.ui.log_message(m),
                 stop_callback=lambda: self._upload_stop_requested,
+                use_package=self.ui.upload_package_var.get(),
             )
 
             def finish():
@@ -991,6 +1009,7 @@ class Application:
                 self._upload_stop_requested = False
                 self._refresh_upload_button_state()
                 self._end_server_operation("upload_dataset")
+                self._set_operational_buttons_enabled(was_connected_before_upload)
 
             self.root.after(0, finish)
 
@@ -1218,385 +1237,22 @@ class Application:
             messagebox.showerror("错误", "请先连接服务器")
             return
 
-        if hasattr(self, "_model_list_window") and self._model_list_window and self._model_list_window.winfo_exists():
+        if hasattr(self, "_model_list_window") and self._model_list_window and self._model_list_window.exists():
             self._model_list_window.lift()
-            self._model_list_window.focus_force()
             if hasattr(self, "_model_list_refresh_fn") and callable(self._model_list_refresh_fn):
                 self._model_list_refresh_fn()
             return
 
-        win = tk.Toplevel(self.root)
-        win.title("服务器模型列表")
-        win.geometry("1380x760")
-        win.transient(self.root)
-        try:
-            win.attributes("-topmost", True)
-        except Exception:
-            pass
-        win.grab_set()
-        win.focus_force()
-        self._center_child_window(win)
-        win.after(0, lambda: self._center_child_window(win))
-        self._model_list_window = win
-
-        def close_model_window():
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            if win.winfo_exists():
-                win.destroy()
-            self._model_list_window = None
-
-        win.protocol("WM_DELETE_WINDOW", close_model_window)
-
-        ttk.Label(win, text="服务器模型列表", font=("Arial", 14, "bold")).pack(pady=(10, 6))
-
-        list_frame = ttk.Frame(win)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
-        list_frame.grid_rowconfigure(0, weight=1)
-        list_frame.grid_columnconfigure(0, weight=1)
-
-        columns = ("name", "ext", "run", "model", "imgsz", "epochs", "batch", "lr", "size", "date", "path")
-        tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="extended")
-        headings = {
-            "name": "文件名",
-            "ext": "扩展名",
-            "run": "运行目录",
-            "model": "原始模型",
-            "imgsz": "图片尺寸",
-            "epochs": "轮次",
-            "batch": "Batch",
-            "lr": "学习率",
-            "size": "大小",
-            "date": "创建时间",
-            "path": "完整路径",
-        }
-        for col in columns:
-            tree.heading(col, text=headings[col])
-            tree.column(col, width=120, minwidth=80, stretch=False)
-
-        tree.tag_configure("ext_pt", background="#dbeafe")
-        tree.tag_configure("ext_onnx", background="#fef3c7")
-        tree.tag_configure("ext_tflite", background="#fee2e2")
-        tree.tag_configure("ext_zip", background="#dcfce7")
-
-        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
-        hsb = ttk.Scrollbar(list_frame, orient="horizontal", command=tree.xview)
-        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-
-        action_frame = ttk.Frame(win)
-        action_frame.pack(fill="x", padx=10, pady=(0, 6))
-
-        status_var = tk.StringVar(value="状态: 准备就绪")
-        detail_var = tk.StringVar(value="详情: -")
-        speed_var = tk.StringVar(value="速度: -")
-        progress_var = tk.DoubleVar(value=0)
-
-        status_line = ttk.Frame(win)
-        status_line.pack(fill="x", padx=10, pady=(0, 2))
-        ttk.Label(status_line, textvariable=status_var).pack(side="left")
-        ttk.Label(status_line, textvariable=speed_var).pack(side="right")
-
-        progress_bar = ttk.Progressbar(win, variable=progress_var, maximum=100, mode="determinate")
-        progress_bar.pack(fill="x", padx=10, pady=(0, 4))
-        ttk.Label(win, textvariable=detail_var).pack(fill="x", padx=10, pady=(0, 6))
-
-        log_text = tk.Text(win, height=8, wrap="word")
-        log_text.pack(fill="both", expand=False, padx=10, pady=(0, 10))
-
-        state = {"busy": False}
-        model_by_item = {}
-
-        def append_log(text):
-            log_text.insert("end", f"{text}\n")
-            log_text.see("end")
-
-        def set_busy(busy, status_text):
-            state["busy"] = bool(busy)
-            status_var.set(f"状态: {status_text}")
-            refresh_btn.config(state="disabled" if busy else "normal")
-            close_btn.config(state="disabled" if busy else "normal")
-            update_action_buttons()
-
-        def set_progress_animating(animating):
-            if animating:
-                progress_bar.configure(mode="indeterminate")
-                progress_bar.start(12)
-            else:
-                progress_bar.stop()
-                progress_bar.configure(mode="determinate")
-
-        def selected_models():
-            models = []
-            for item in tree.selection():
-                m = model_by_item.get(item)
-                if m:
-                    models.append(m)
-            return models
-
-        def update_action_buttons(*_):
-            models = selected_models()
-            has_selected = len(models) > 0
-            can_convert = has_selected and all(str(m.get("ext", "")).lower() == ".pt" for m in models)
-            normal_or_disabled = "disabled" if state["busy"] else "normal"
-            download_btn.config(state=normal_or_disabled if has_selected else "disabled")
-            delete_btn.config(state=normal_or_disabled if has_selected else "disabled")
-            convert_btn.config(state=normal_or_disabled if can_convert else "disabled")
-
-        tree.bind("<<TreeviewSelect>>", update_action_buttons)
-
-        def auto_fit_columns():
-            width_map = {c: max(90, len(headings[c]) * 16 + 24) for c in columns}
-            for item in tree.get_children(""):
-                vals = tree.item(item, "values")
-                for idx, col in enumerate(columns):
-                    val = str(vals[idx]) if idx < len(vals) else ""
-                    width_map[col] = min(760, max(width_map[col], len(val) * 9 + 30))
-            for col in columns:
-                tree.column(col, width=width_map[col], minwidth=80, stretch=False)
-
-        def render_models(models):
-            model_by_item.clear()
-            for item in tree.get_children(""):
-                tree.delete(item)
-            for m in models:
-                ext = str(m.get("ext", "")).lower()
-                tag = ""
-                if ext == ".pt":
-                    tag = "ext_pt"
-                elif ext == ".onnx":
-                    tag = "ext_onnx"
-                elif ext == ".tflite":
-                    tag = "ext_tflite"
-                elif ext == ".zip":
-                    tag = "ext_zip"
-                iid = tree.insert(
-                    "",
-                    "end",
-                    values=(
-                        m.get("name", ""),
-                        ext or "-",
-                        m.get("run_dir", ""),
-                        m.get("base_model", ""),
-                        m.get("image_size", ""),
-                        m.get("epochs", ""),
-                        m.get("batch", ""),
-                        m.get("lr0", ""),
-                        m.get("size", ""),
-                        m.get("date", ""),
-                        m.get("path", ""),
-                    ),
-                    tags=(tag,) if tag else (),
-                )
-                model_by_item[iid] = m
-            auto_fit_columns()
-            detail_var.set(f"详情: 共 {len(models)} 个模型文件")
-            update_action_buttons()
-
-        def refresh_models():
-            if state["busy"]:
-                return
-            set_busy(True, "正在快速查询模型...")
-            speed_var.set("速度: -")
-            progress_var.set(0)
-            detail_var.set("详情: 扫描训练产物目录 /root/runs 与数据集/runs")
-
-            def worker():
-                try:
-                    models = self.model_manager.query_all_models()
-                except Exception as e:
-                    models = None
-                    err = str(e)
-                else:
-                    err = ""
-
-                def done():
-                    if models is None:
-                        append_log(f"❌ 查询失败: {err}")
-                        detail_var.set("详情: 查询失败")
-                    else:
-                        render_models(models)
-                        append_log(f"✓ 查询完成，共 {len(models)} 个文件")
-                    set_busy(False, "就绪")
-
-                self.root.after(0, done)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        def start_download():
-            if state["busy"]:
-                return
-            models = selected_models()
-            if not models:
-                messagebox.showwarning("提示", "请先选择要下载的模型")
-                return
-            local_dir = filedialog.askdirectory(title="选择保存目录")
-            if not local_dir:
-                return
-
-            download_targets = [{"name": m.get("name", "unknown"), "path": m.get("path", "")} for m in models]
-            set_busy(True, "下载中")
-            append_log(f"开始下载，共 {len(download_targets)} 个文件 -> {local_dir}")
-
-            def on_progress(event):
-                event_type = event.get("type")
-                if event_type == "item" and event.get("stage") == "downloading":
-                    progress_var.set(float(event.get("progress", 0.0)))
-                    speed_var.set(f"速度: {event.get('speed_text', '-')}")
-                    idx = int(event.get("index", 0))
-                    total = int(event.get("total", 0))
-                    name = event.get("name", "-")
-                    transferred = int(event.get("transferred", 0))
-                    total_size = int(event.get("total_size", 0))
-                    detail_var.set(
-                        f"详情: 正在下载 {idx}/{total} {name} ({transferred}/{total_size} bytes)"
-                    )
-                elif event_type == "item" and event.get("stage") == "finished":
-                    if event.get("success"):
-                        append_log(f"✓ 下载成功: {event.get('local_path', '')}")
-                    else:
-                        append_log(f"❌ 下载失败: {event.get('name', '-')} | {event.get('error', '未知错误')}")
-                elif event_type == "finish":
-                    succ = int(event.get("success_count", 0))
-                    fail = int(event.get("fail_count", 0))
-                    progress_var.set(100 if fail == 0 else float(progress_var.get()))
-                    speed_var.set("速度: -")
-                    detail_var.set(f"详情: 下载完成，成功 {succ}，失败 {fail}")
-                    set_busy(False, "就绪")
-
-            def worker():
-                self.model_download_manager.download_models(
-                    download_targets,
-                    local_dir,
-                    progress_callback=lambda e: self.root.after(0, lambda ev=e: on_progress(ev)),
-                )
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        def delete_selected():
-            if state["busy"]:
-                return
-            models = selected_models()
-            if not models:
-                messagebox.showwarning("提示", "请先选择要删除的模型")
-                return
-            paths = [m.get("path", "") for m in models if m.get("path")]
-            if not paths:
-                messagebox.showwarning("提示", "选中项缺少路径，无法删除")
-                return
-            if not messagebox.askyesno("确认删除", f"确认删除选中的 {len(paths)} 个模型文件吗？"):
-                return
-
-            set_busy(True, "删除中")
-            progress_var.set(0)
-            speed_var.set("速度: -")
-            detail_var.set(f"详情: 正在删除 {len(paths)} 个文件")
-
-            def worker():
-                success, msg = self.model_manager.remove_models(paths)
-
-                def done():
-                    if success:
-                        append_log(f"✓ {msg}")
-                        progress_var.set(100)
-                        refresh_models()
-                    else:
-                        append_log(f"❌ 删除失败: {msg}")
-                        set_busy(False, "就绪")
-
-                self.root.after(0, done)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        def convert_selected():
-            if state["busy"]:
-                return
-            models = selected_models()
-            if not models:
-                messagebox.showwarning("提示", "请先选择要转换的 .pt 模型")
-                return
-            bad = [m.get("name", "") for m in models if str(m.get("ext", "")).lower() != ".pt"]
-            if bad:
-                messagebox.showwarning("提示", "仅支持选中的 .pt 模型进行转换")
-                return
-
-            set_busy(True, "TFLite转换中")
-            progress_var.set(0)
-            detail_var.set(f"详情: 准备转换 {len(models)} 个 .pt 模型")
-            speed_var.set("速度: -")
-
-            def worker():
-                preferred_export_python = self.config_manager.convert_config.get("python_export_cmd", "")
-                python_cmd, ultra_ver = self.environment_manager.get_export_python_cmd(
-                    preferred_cmd=preferred_export_python,
-                    log_callback=lambda msg: self.root.after(0, lambda m=msg: self.ui.log_message(m)),
-                )
-                if not python_cmd:
-                    self.root.after(0, lambda: append_log("❌ 转换失败: 未找到可用转换环境"))
-                    self.root.after(0, lambda: detail_var.set("详情: 转换环境不可用"))
-                    self.root.after(0, lambda: set_busy(False, "就绪"))
-                    return
-
-                if preferred_export_python != python_cmd:
-                    self.config_manager.convert_config["python_export_cmd"] = python_cmd
-                    self.config_manager.save_config()
-
-                self.root.after(0, lambda p=python_cmd, v=ultra_ver: append_log(f"使用转换环境: {p} | ultralytics={v or 'unknown'}"))
-                total = len(models)
-                success_count = 0
-
-                for idx, m in enumerate(models, start=1):
-                    name = m.get("name", "unknown")
-                    remote_path = m.get("path", "")
-                    self.root.after(
-                        0,
-                        lambda i=idx, t=total, n=name: detail_var.set(f"详情: 正在转换 {i}/{t} {n}")
-                    )
-                    self.root.after(0, lambda p=(idx - 1) / total * 100.0: progress_var.set(p))
-                    self.root.after(0, lambda: set_progress_animating(True))
-                    ok, msg = self.model_manager.convert_remote_model_to_tflite(
-                        remote_model=remote_path,
-                        python_cmd=python_cmd,
-                        log_callback=lambda mm: self.root.after(0, lambda mmm=mm: self.ui.log_message(mmm)),
-                    )
-                    self.root.after(0, lambda: set_progress_animating(False))
-                    if ok:
-                        success_count += 1
-                        self.root.after(0, lambda n=name, mmsg=msg: append_log(f"✓ 转换成功: {n} | {mmsg}"))
-                    else:
-                        self.root.after(0, lambda n=name, mmsg=msg: append_log(f"❌ 转换失败: {n} | {mmsg}"))
-                    self.root.after(0, lambda p=idx / total * 100.0: progress_var.set(p))
-
-                def done():
-                    fail_count = total - success_count
-                    set_progress_animating(False)
-                    detail_var.set(f"详情: 转换完成，成功 {success_count}，失败 {fail_count}")
-                    set_busy(False, "就绪")
-                    refresh_models()
-
-                self.root.after(0, done)
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        refresh_btn = ttk.Button(action_frame, text="刷新列表", bootstyle="secondary", command=refresh_models)
-        download_btn = ttk.Button(action_frame, text="下载选中", bootstyle="success", command=start_download)
-        delete_btn = ttk.Button(action_frame, text="删除模型", bootstyle="danger", command=delete_selected)
-        convert_btn = ttk.Button(action_frame, text="TFLite转换", bootstyle="warning", command=convert_selected)
-        close_btn = ttk.Button(action_frame, text="关闭", bootstyle="secondary", command=close_model_window)
-
-        refresh_btn.pack(side="left", padx=(0, 6))
-        download_btn.pack(side="left", padx=(0, 6))
-        delete_btn.pack(side="left", padx=(0, 6))
-        convert_btn.pack(side="left", padx=(0, 6))
-        close_btn.pack(side="right")
-        update_action_buttons()
-
-        self._model_list_refresh_fn = refresh_models
-        refresh_models()
+        self._model_list_window = ModelListWindow(
+            parent=self.root,
+            model_manager=self.model_manager,
+            model_download_manager=self.model_download_manager,
+            environment_manager=self.environment_manager,
+            config_manager=self.config_manager,
+            log_callback=self.ui.log_message,
+            get_tflite_format_fn=lambda: self.ui.tflite_format_var.get(),
+        )
+        self._model_list_refresh_fn = self._model_list_window.refresh
 
     def _open_file_manager(self):
         """远程文件管理窗口"""

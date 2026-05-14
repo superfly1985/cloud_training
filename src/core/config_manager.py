@@ -56,7 +56,8 @@ class ConfigManager:
 
         # 转换配置：与训练环境解耦，避免依赖冲突
         self.convert_config = {
-            'python_export_cmd': ''
+            'python_export_cmd': '',
+            'tflite_format': 'fp32'  # fp32 or fp16
         }
         
         self.config = {

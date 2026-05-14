@@ -1,6 +1,6 @@
 {
     "server": {
-        "hostname": "43.153.180.108",
+        "hostname": "43.134.60.45",
         "port": 22,
         "username": "root",
         "password": "Vonzeus01",
@@ -16,12 +16,12 @@
         "num_classes": 1
     },
     "training": {
-        "epochs": 300,
-        "batch_size": 32,
+        "epochs": 30,
+        "batch_size": 15,
         "learning_rate": 0.02,
         "image_size": 640,
         "base_model": "yolov8n.pt",
-        "model_name_suffix": "请输入模型名称",
+        "model_name_suffix": "大小支架V2",
         "augment_scale": 0.338,
         "augment_fliplr": 0.183,
         "augment_flipud": 0.163,
@@ -29,26 +29,28 @@
         "augment_hsv_h": 0.018,
         "augment_hsv_s": 0.167,
         "augment_hsv_v": 0.179,
-        "augment_scale_active": true,
-        "augment_fliplr_active": true,
+        "augment_scale_active": false,
+        "augment_fliplr_active": false,
         "augment_flipud_active": false,
-        "augment_perspective_active": true,
+        "augment_perspective_active": false,
         "augment_hsv_h_active": false,
         "augment_hsv_s_active": false,
         "augment_hsv_v_active": false
     },
     "ui": {
-        "window_width": 1278,
-        "window_height": 850,
+        "window_width": 1306,
+        "window_height": 855,
         "window_state": "normal",
-        "window_x": 196,
-        "window_y": 89
+        "window_x": 287,
+        "window_y": 135
     },
     "convert": {
-        "python_export_cmd": "/root/miniforge3/bin/python3"
+        "python_export_cmd": "/root/miniforge3/bin/python3",
+        "tflite_format": "fp16"
     },
     "upload": {
-        "max_workers": 20,
-        "retry_times": 3
+        "max_workers": 6,
+        "retry_times": 3,
+        "use_package": false
     }
 }

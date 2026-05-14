@@ -175,15 +175,27 @@ class DatasetManager:
         progress_callback=None,
         log_callback=None,
         stop_callback=None,
+        use_package=False,
     ):
         """上传完整数据集目录到远端"""
-        return server_manager.upload_dir(
-            local_path,
-            remote_path,
-            progress_callback=progress_callback,
-            log_callback=log_callback,
-            stop_callback=stop_callback,
-        )
+        if use_package:
+            if log_callback:
+                log_callback("使用打包上传模式...")
+            return server_manager.upload_package(
+                local_path,
+                remote_path,
+                progress_callback=progress_callback,
+                log_callback=log_callback,
+                stop_callback=stop_callback,
+            )
+        else:
+            return server_manager.upload_dir(
+                local_path,
+                remote_path,
+                progress_callback=progress_callback,
+                log_callback=log_callback,
+                stop_callback=stop_callback,
+            )
 
     def clear_remote_dataset(self, remote_path, server_manager):
         """清空远端训练集目录"""

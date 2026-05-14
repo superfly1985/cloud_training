@@ -29,16 +29,13 @@ class ConfigBindingManager:
                 "augment_hsv_v": "augment_hsv_v_var",
                 "augment_flipud": "flipud_var",
                 "augment_perspective": "perspective_var",
-                "augment_scale_active": "augment_scale_active_var",
-                "augment_fliplr_active": "augment_fliplr_active_var",
-                "augment_flipud_active": "augment_flipud_active_var",
-                "augment_perspective_active": "augment_perspective_active_var",
-                "augment_hsv_h_active": "augment_hsv_h_active_var",
-                "augment_hsv_s_active": "augment_hsv_s_active_var",
-                "augment_hsv_v_active": "augment_hsv_v_active_var",
             },
             "upload_config": {
                 "max_workers": "upload_max_workers_var",
+                "use_package": "upload_package_var",
+            },
+            "convert_config": {
+                "tflite_format": "tflite_format_var",
             },
         }
         self._update_mapping = {
@@ -67,16 +64,13 @@ class ConfigBindingManager:
                 "augment_hsv_h": ("augment_hsv_h_var", float),
                 "augment_hsv_s": ("augment_hsv_s_var", float),
                 "augment_hsv_v": ("augment_hsv_v_var", float),
-                "augment_scale_active": ("augment_scale_active_var", bool),
-                "augment_fliplr_active": ("augment_fliplr_active_var", bool),
-                "augment_flipud_active": ("augment_flipud_active_var", bool),
-                "augment_perspective_active": ("augment_perspective_active_var", bool),
-                "augment_hsv_h_active": ("augment_hsv_h_active_var", bool),
-                "augment_hsv_s_active": ("augment_hsv_s_active_var", bool),
-                "augment_hsv_v_active": ("augment_hsv_v_active_var", bool),
             },
             "upload_config": {
                 "max_workers": ("upload_max_workers_var", int),
+                "use_package": ("upload_package_var", bool),
+            },
+            "convert_config": {
+                "tflite_format": ("tflite_format_var", str),
             },
         }
 

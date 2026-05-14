@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-云端训练管理平台 v3.0.5 - 纯UI界面
+云端训练管理平台 v3.0.8 - 纯UI界面
 仅负责布局和控件创建，不包含业务逻辑
 """
 
@@ -22,7 +22,7 @@ class MainWindow:
     
     def __init__(self, root):
         self.root = root
-        self.app_version = "v3.0.5"
+        self.app_version = "v3.0.8"
         self.root.title(f"云端训练管理平台 {self.app_version}")
         self.root.geometry("1240x900")
         self.root.minsize(1190, 720)
@@ -60,13 +60,13 @@ class MainWindow:
         self.augment_hsv_h_var = tk.DoubleVar(value=0.015)
         self.augment_hsv_s_var = tk.DoubleVar(value=0.7)
         self.augment_hsv_v_var = tk.DoubleVar(value=0.4)
-        self.augment_scale_active_var = tk.BooleanVar(value=True)
-        self.augment_fliplr_active_var = tk.BooleanVar(value=True)
-        self.augment_flipud_active_var = tk.BooleanVar(value=True)
-        self.augment_perspective_active_var = tk.BooleanVar(value=True)
-        self.augment_hsv_h_active_var = tk.BooleanVar(value=True)
-        self.augment_hsv_s_active_var = tk.BooleanVar(value=True)
-        self.augment_hsv_v_active_var = tk.BooleanVar(value=True)
+        self.augment_scale_active_var = tk.BooleanVar(value=False)
+        self.augment_fliplr_active_var = tk.BooleanVar(value=False)
+        self.augment_flipud_active_var = tk.BooleanVar(value=False)
+        self.augment_perspective_active_var = tk.BooleanVar(value=False)
+        self.augment_hsv_h_active_var = tk.BooleanVar(value=False)
+        self.augment_hsv_s_active_var = tk.BooleanVar(value=False)
+        self.augment_hsv_v_active_var = tk.BooleanVar(value=False)
         
         # 数据集变量
         self.dataset_path_var = tk.StringVar(value="D:\\datasets\\train")
@@ -94,6 +94,8 @@ class MainWindow:
         self.dataset_summary_var = tk.StringVar(value="检查总结: 未生成")
         self.upload_progress_var = tk.DoubleVar(value=0)
         self.upload_max_workers_var = tk.StringVar(value="8")
+        self.upload_package_var = tk.BooleanVar(value=False)
+        self.tflite_format_var = tk.StringVar(value="fp32")
         self.training_status_var = tk.StringVar(value="未开始")
         self.status_duration_var = tk.StringVar(value="时长: 00:00:00")
         self.status_eta_var = tk.StringVar(value="预计完成: --")
@@ -546,6 +548,18 @@ class MainWindow:
         self.btn_clear_dataset = ttk.Button(btn_frame, text="清空训练集", bootstyle="danger")
         self.btn_clear_dataset.grid(row=0, column=2, padx=(0, 5), sticky=tk.W)
 
+        self.chk_upload_package = ttk.Checkbutton(
+            btn_frame,
+            text="打包上传",
+            variable=self.upload_package_var,
+            command=self._on_upload_package_toggle,
+        )
+        self.chk_upload_package.grid(row=0, column=3, padx=(0, 5), sticky=tk.W)
+        self._bind_tooltip(
+            self.chk_upload_package,
+            "勾选后会将训练集打包压缩后上传，适合小文件多的场景（自动覆盖云端文件）"
+        )
+
         self.cmb_upload_workers = ttk.Combobox(
             btn_frame,
             width=5,
@@ -554,8 +568,32 @@ class MainWindow:
             justify="center",
             values=[str(i) for i in range(1, 33)],
         )
-        self.cmb_upload_workers.grid(row=0, column=5, padx=(8, 0), sticky=tk.E)
-    
+        self.cmb_upload_workers.grid(row=0, column=4, padx=(8, 0), sticky=tk.E)
+
+    def _on_upload_package_toggle(self):
+        """打包上传切换"""
+        if self.upload_package_var.get():
+            self.cmb_upload_workers.config(state="disabled")
+        else:
+            self.cmb_upload_workers.config(state="readonly")
+
+    def _bind_tooltip(self, widget, text):
+        """给控件绑定悬浮提示"""
+        def on_enter(event):
+            self._show_tooltip(text, event.x_root, event.y_root)
+
+        def on_motion(event):
+            if self._tooltip_window is not None:
+                self._tooltip_window.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+
+        def on_leave(event):
+            self._hide_tooltip()
+
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Motion>", on_motion)
+        widget.bind("<Leave>", on_leave)
+        widget.bind("<ButtonPress>", self._hide_tooltip)
+
     def update_classes_table(self, classes_list):
         """更新类别列表表格
         :param classes_list: 类别名称列表或包含 (id, name) 的元组列表
@@ -761,7 +799,7 @@ class MainWindow:
             value_label = ttk.Label(slider_frame, text=f"{var.get():.3f}", width=6, font=('Arial', 10))
             value_label.grid(row=0, column=1, padx=(5, 0))
             
-            chk = ttk.Checkbutton(slider_frame, text="启用", variable=active_var, width=5)
+            chk = ttk.Checkbutton(slider_frame, text="启用", variable=active_var, width=5, command=lambda v=active_var, k=key: self._on_augment_toggle(v, k))
             chk.grid(row=0, column=2, padx=(5, 0))
             
             self.augment_sliders[label] = (scale, value_label)
@@ -771,6 +809,18 @@ class MainWindow:
             def update_value(*args, v=var, lbl=value_label):
                 lbl.config(text=f"{v.get():.3f}")
             var.trace_add('write', update_value)
+    
+    def _on_augment_toggle(self, active_var, key):
+        """图像增强开关回调 - 开启时提示警告"""
+        if active_var.get():
+            from tkinter import messagebox
+            result = messagebox.askokcancel(
+                "图像增强警告",
+                "图像增强可能导致训练失败，请谨慎开启！\n\n确定要启用此增强吗？",
+                icon="warning"
+            )
+            if not result:
+                active_var.set(False)
 
 
 # 测试代码

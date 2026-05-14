@@ -250,14 +250,20 @@ class ModelManager:
         return {}
 
     def _ensure_canonical_tflite_name(self, python_cmd, remote_model, tflite_path):
-        """将导出的 tflite 统一落在原模型目录，且与原模型同名仅改扩展名。"""
+        """将导出的 tflite 统一落在原模型目录，且与原模型同名仅改扩展名（保留 fp32/fp16 标记）。"""
         if not tflite_path:
             return False, ""
         normalize_script = (
             "import os, shutil, json\n"
             f"src = {tflite_path!r}\n"
             f"model_path = {remote_model!r}\n"
-            "dst = os.path.splitext(model_path)[0] + '.tflite'\n"
+            "src_name = os.path.basename(src)\n"
+            "suffix = ''\n"
+            "if '_fp32.tflite' in src_name:\n"
+            "    suffix = '_fp32'\n"
+            "elif '_fp16.tflite' in src_name:\n"
+            "    suffix = '_fp16'\n"
+            "dst = os.path.splitext(model_path)[0] + suffix + '.tflite'\n"
             "ret = {'ok': False, 'path': dst, 'error': ''}\n"
             "try:\n"
             "    if not os.path.isfile(src):\n"
@@ -282,7 +288,7 @@ class ModelManager:
             return True, str(obj.get("path", "")).strip()
         return False, ""
 
-    def convert_remote_model_to_tflite(self, remote_model, python_cmd, log_callback=None):
+    def convert_remote_model_to_tflite(self, remote_model, python_cmd, log_callback=None, tflite_format="fp32"):
         def _log(msg):
             if callable(log_callback):
                 log_callback(msg)
@@ -292,6 +298,50 @@ class ModelManager:
 
         imgsz = int(self.config_manager.training_config.get("image_size", 640) or 640)
         quoted_model = self._quote(remote_model)
+        remote_base = self._remote_base()
+        model_dir = os.path.dirname(remote_model) or "/root"
+        primary_data_yaml = f"{remote_base}/dataset.yaml"
+
+        find_yaml_script = (
+            "import os, yaml, json\n"
+            f"model_dir = {model_dir!r}\n"
+            f"primary = {primary_data_yaml!r}\n"
+            "result = {'path': primary}\n"
+            "def has_nc_names(fp):\n"
+            "    try:\n"
+            "        with open(fp, 'r', encoding='utf-8') as f:\n"
+            "            d = yaml.safe_load(f) or {}\n"
+            "            return 'nc' in d and 'names' in d\n"
+            "    except:\n"
+            "        return False\n"
+            "if os.path.isfile(primary) and has_nc_names(primary):\n"
+            "    result['path'] = primary\n"
+            "else:\n"
+            "    for f in sorted(os.listdir(model_dir)):\n"
+            "        if f.endswith('.yaml') or f.endswith('.yml'):\n"
+            "            fp = os.path.join(model_dir, f)\n"
+            "            if has_nc_names(fp):\n"
+            "                result['path'] = fp\n"
+            "                break\n"
+            "print('__YAML_FIND_RESULT__')\n"
+            "print(json.dumps(result))\n"
+            "print('__YAML_FIND_RESULT_END__')\n"
+        )
+        find_yaml_cmd = f"{python_cmd} - <<'PY'\n{find_yaml_script}PY"
+        ok_find, out_find = self.server_manager.execute_command(find_yaml_cmd, timeout=15)
+        data_yaml_path = primary_data_yaml
+        if ok_find:
+            import json as _json
+            marker_start = "__YAML_FIND_RESULT__"
+            marker_end = "__YAML_FIND_RESULT_END__"
+            if marker_start in out_find and marker_end in out_find:
+                try:
+                    json_str = out_find.split(marker_start, 1)[1].split(marker_end, 1)[0].strip()
+                    find_result = _json.loads(json_str)
+                    if find_result.get("path"):
+                        data_yaml_path = find_result["path"]
+                except Exception:
+                    pass
 
         # 1) 转换前门禁：文件存在 + ultralytics + YOLO 导入
         preflight_script = (
@@ -326,41 +376,63 @@ class ModelManager:
             return False, f"转换前检查失败: {detail}"
         _log(f"转换门禁通过: ultralytics {pre_obj.get('ultralytics_version', 'unknown')}")
 
-        # 2) 主路径：旧版稳定路线（YOLO.export）
+        # 2) 主路径：一次导出生成 fp16+fp32，清理中间产物
         native_script = (
             "import glob, json, os, traceback\n"
             "from ultralytics import YOLO\n"
             "import ultralytics\n"
             f"best_pt = {remote_model!r}\n"
             f"imgsz = {imgsz}\n"
+            f"data_yaml = {data_yaml_path!r}\n"
             "result = {'status':'failed','error_msg':'','outputs':{},'logs':{'ultralytics_version':getattr(ultralytics,'__version__','unknown')}}\n"
             "try:\n"
             "    model = YOLO(best_pt)\n"
-            "    export_ret = model.export(format='tflite', imgsz=imgsz, batch=1)\n"
-            "    result['logs']['export_return'] = str(export_ret)\n"
+            "    model.export(format='tflite', imgsz=imgsz, batch=1, int8=False, half=True, nms=True, data=data_yaml)\n"
+            "    model.export(format='tflite', imgsz=imgsz, batch=1, int8=False, half=False, nms=True, data=data_yaml)\n"
             "    model_stem = os.path.splitext(os.path.basename(best_pt))[0]\n"
             "    out_dir = os.path.dirname(best_pt) or '/root'\n"
             "    saved_model_dir = os.path.splitext(best_pt)[0] + '_saved_model'\n"
-            "    files = sorted(glob.glob(os.path.join(saved_model_dir, '*.tflite')))\n"
-            "    files = [f for f in files if model_stem in os.path.basename(f)]\n"
-            "    if not files:\n"
-            "        files = sorted(glob.glob(os.path.join(out_dir, '*_saved_model', '*.tflite')))\n"
-            "        files = [f for f in files if model_stem in os.path.basename(f)]\n"
-            "    fp32 = ''\n"
-            "    fp16 = ''\n"
-            "    for fp in files:\n"
-            "        low = os.path.basename(fp).lower()\n"
-            "        if 'float16' in low and not fp16:\n"
-            "            fp16 = fp\n"
-            "        elif not fp32:\n"
-            "            fp32 = fp\n"
-            "    if fp32:\n"
-            "        result['outputs']['tflite'] = fp32\n"
-            "        result['outputs']['tflite_fp32'] = fp32\n"
-            "    if fp16:\n"
-            "        result['outputs']['tflite_fp16'] = fp16\n"
-            "    if not result['outputs']:\n"
-            "        raise RuntimeError('未找到导出的tflite文件')\n"
+            "    fp32_file = ''\n"
+            "    fp16_file = ''\n"
+            "    for fp in sorted(glob.glob(os.path.join(saved_model_dir, '*.tflite'))):\n"
+            "        bn = os.path.basename(fp)\n"
+            "        if 'float32' in bn and model_stem in bn:\n"
+            "            fp32_file = fp\n"
+            "        elif 'float16' in bn and model_stem in bn:\n"
+            "            fp16_file = fp\n"
+            "    if not fp32_file:\n"
+            "        for fp in sorted(glob.glob(os.path.join(saved_model_dir, '*.tflite'))):\n"
+            "            if model_stem in os.path.basename(fp) and 'float16' not in os.path.basename(fp):\n"
+            "                fp32_file = fp\n"
+            "                break\n"
+            "    if fp32_file:\n"
+            "        new_fp32 = fp32_file.replace('.tflite', '_fp32.tflite') if not fp32_file.endswith('_fp32.tflite') else fp32_file\n"
+            "        if fp32_file != new_fp32 and os.path.exists(fp32_file):\n"
+            "            os.rename(fp32_file, new_fp32)\n"
+            "            fp32_file = new_fp32\n"
+            "    if fp16_file:\n"
+            "        new_fp16 = fp16_file.replace('.tflite', '_fp16.tflite') if not fp16_file.endswith('_fp16.tflite') else fp16_file\n"
+            "        if fp16_file != new_fp16 and os.path.exists(fp16_file):\n"
+            "            os.rename(fp16_file, new_fp16)\n"
+            "            fp16_file = new_fp16\n"
+            "    onnx_file = os.path.splitext(best_pt)[0] + '.onnx'\n"
+            "    if os.path.isfile(onnx_file):\n"
+            "        os.remove(onnx_file)\n"
+            "    other_tflites = []\n"
+            "    for fp in glob.glob(os.path.join(saved_model_dir, '*.tflite')):\n"
+            "        bn = os.path.basename(fp)\n"
+            "        if fp != fp32_file and fp != fp16_file:\n"
+            "            other_tflites.append(fp)\n"
+            "    for fp in other_tflites:\n"
+            "        try:\n"
+            "            os.remove(fp)\n"
+            "        except:\n"
+            "            pass\n"
+            "    result['outputs']['tflite_fp32'] = fp32_file\n"
+            "    result['outputs']['tflite_fp16'] = fp16_file\n"
+            "    result['outputs']['tflite'] = fp32_file\n"
+            "    result['outputs']['cleaned_onnx'] = onnx_file\n"
+            "    result['outputs']['cleaned_other'] = len(other_tflites)\n"
             "    result['status'] = 'success'\n"
             "except Exception as e:\n"
             "    result['error_msg'] = str(e)\n"
@@ -378,47 +450,47 @@ class ModelManager:
             outputs = native_obj.get("outputs", {}) or {}
             fp32 = outputs.get("tflite_fp32") or outputs.get("tflite")
             fp16 = outputs.get("tflite_fp16")
-            final_tflite = fp32
-            norm_ok, norm_path = self._ensure_canonical_tflite_name(python_cmd, remote_model, fp32)
-            if norm_ok and norm_path:
-                final_tflite = norm_path
-            msg = f"转换成功(tflite): {final_tflite}" if final_tflite else "转换成功"
+            model_dir_clean = os.path.dirname(remote_model) or "/root"
+            clean_cmd = f"cd {self._quote(model_dir_clean)} && rm -f *.tflite 2>/dev/null || true"
+            self.server_manager.execute_command(clean_cmd, timeout=10)
+            msg = f"转换成功: fp32={fp32}" if fp32 else "转换成功"
             if fp16:
-                msg += f" | fp16: {fp16}"
+                msg += f" | fp16={fp16}"
+            cleaned = outputs.get("cleaned_other", 0)
+            if cleaned:
+                msg += f" (清理{cleaned}个多余文件)"
             return True, msg
 
         # 3) 回退链：python -m ultralytics export
         _log("主转换路径失败，尝试回退: python -m ultralytics export")
-        cmd_m = f"{python_cmd} -m ultralytics export model={quoted_model} format=tflite imgsz={imgsz}"
+        cmd_m = f"{python_cmd} -m ultralytics export model={quoted_model} format=tflite imgsz={imgsz} int8=False nms=True data={data_yaml_path}"
         ok_m, out_m = self.server_manager.execute_command(cmd_m, timeout=3600)
         discovered_m = self._discover_tflite_outputs(python_cmd, remote_model)
         if ok_m and discovered_m.get("tflite"):
             fp32 = discovered_m.get("tflite_fp32") or discovered_m.get("tflite")
             fp16 = discovered_m.get("tflite_fp16")
-            final_tflite = fp32
-            norm_ok, norm_path = self._ensure_canonical_tflite_name(python_cmd, remote_model, fp32)
-            if norm_ok and norm_path:
-                final_tflite = norm_path
-            msg = f"回退转换成功(tflite): {final_tflite}" if final_tflite else "回退转换成功"
+            model_dir_clean = os.path.dirname(remote_model) or "/root"
+            clean_cmd = f"cd {self._quote(model_dir_clean)} && rm -f *.tflite 2>/dev/null || true"
+            self.server_manager.execute_command(clean_cmd, timeout=10)
+            msg = f"回退转换成功: fp32={fp32}" if fp32 else "回退转换成功"
             if fp16:
-                msg += f" | fp16: {fp16}"
+                msg += f" | fp16={fp16}"
             return True, msg
 
         # 4) 回退链：yolo export
         _log("继续回退: yolo export")
-        cmd_yolo = f"yolo export model={quoted_model} format=tflite imgsz={imgsz}"
+        cmd_yolo = f"yolo export model={quoted_model} format=tflite imgsz={imgsz} int8=False nms=True data={data_yaml_path}"
         ok_yolo, out_yolo = self.server_manager.execute_command(cmd_yolo, timeout=3600)
         discovered_yolo = self._discover_tflite_outputs(python_cmd, remote_model)
         if ok_yolo and discovered_yolo.get("tflite"):
             fp32 = discovered_yolo.get("tflite_fp32") or discovered_yolo.get("tflite")
             fp16 = discovered_yolo.get("tflite_fp16")
-            final_tflite = fp32
-            norm_ok, norm_path = self._ensure_canonical_tflite_name(python_cmd, remote_model, fp32)
-            if norm_ok and norm_path:
-                final_tflite = norm_path
-            msg = f"CLI回退成功(tflite): {final_tflite}" if final_tflite else "CLI回退成功"
+            model_dir_clean = os.path.dirname(remote_model) or "/root"
+            clean_cmd = f"cd {self._quote(model_dir_clean)} && rm -f *.tflite 2>/dev/null || true"
+            self.server_manager.execute_command(clean_cmd, timeout=10)
+            msg = f"CLI回退成功: fp32={fp32}" if fp32 else "CLI回退成功"
             if fp16:
-                msg += f" | fp16: {fp16}"
+                msg += f" | fp16={fp16}"
             return True, msg
 
         native_err = ""

@@ -4,7 +4,7 @@ block_cipher = None
 
 # 如果需要手动指定版本，可以在这里修改，或者通过环境变量传入
 import os
-version = os.environ.get('APP_VERSION', 'v3.0.5')
+version = os.environ.get('APP_VERSION', 'v3.0.8')
 
 a = Analysis(
     ['main.py'],

@@ -1,0 +1,77 @@
+import os
+import subprocess
+
+from app.utils.logger import get_logger
+from app.utils.helpers import ensure_dir
+from app.config import get_config, get_data_dir
+
+
+def run_init() -> dict:
+    logger = get_logger()
+    logger.info("开始系统初始化...")
+
+    dirs = ("datasets_path", "runs_path", "pretrained_path", "temp_path", "logs_path", "db_path")
+    for key in dirs:
+        path = get_data_dir(key)
+        logger.info(f"  目录 [{key}]: {path}")
+
+    _init_conda_envs(logger)
+
+    logger.info("系统初始化完成")
+    return {"status": "ok", "message": "系统初始化完成"}
+
+
+def _init_conda_envs(logger):
+    cfg = get_config()
+    convert_cmd = cfg.get("convert", {}).get("python_export_cmd", "")
+    if convert_cmd and os.path.exists(convert_cmd):
+        logger.info(f"转换环境已就绪: {convert_cmd}")
+    else:
+        logger.warning(f"转换环境未找到: {convert_cmd}")
+
+
+def auto_fix() -> dict:
+    logger = get_logger()
+    logger.info("开始自动修复...")
+
+    dirs = ("datasets_path", "runs_path", "pretrained_path", "temp_path", "logs_path", "db_path")
+    for key in dirs:
+        get_data_dir(key)
+
+    _try_install_ultralytics(logger)
+    _try_install_onnx(logger)
+
+    logger.info("自动修复完成")
+    return {"status": "ok", "message": "自动修复完成"}
+
+
+def _try_install_ultralytics(logger):
+    try:
+        import ultralytics
+        return
+    except ImportError:
+        pass
+    logger.info("尝试安装 ultralytics...")
+    try:
+        subprocess.run(
+            ["pip", "install", "ultralytics"],
+            capture_output=True, text=True, timeout=300,
+        )
+    except Exception as e:
+        logger.error(f"安装 ultralytics 失败: {e}")
+
+
+def _try_install_onnx(logger):
+    try:
+        import onnx
+        return
+    except ImportError:
+        pass
+    logger.info("尝试安装 onnx...")
+    try:
+        subprocess.run(
+            ["pip", "install", "onnx"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:
+        logger.error(f"安装 onnx 失败: {e}")

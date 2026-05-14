@@ -128,7 +128,7 @@ class EnvironmentManager:
         return "", ""
 
     def _get_env_spec(self):
-        """训练环境规则源：检查、修复、训练前门禁复用"""
+        """训练环境规则源：检查、修复、训练前门禁复用（仅训练环境依赖）"""
         return {
             "system_packages": ["libgl1-mesa-glx", "libglib2.0-0", "libusb-1.0-0"],
             "python_packages": [
@@ -142,13 +142,67 @@ class EnvironmentManager:
                 {"name": "onnx", "pip": "onnx==1.16.1", "import_cmd": "import onnx; print(onnx.__version__)", "exact_ver": "1.16.1"},
                 {"name": "onnxsim", "pip": "onnxsim", "import_cmd": "import onnxsim; print(onnxsim.__version__)"},
                 {"name": "onnxruntime", "pip": "onnxruntime-gpu", "import_cmd": "import onnxruntime as ort; print(ort.__version__)"},
-                {"name": "flatbuffers", "pip": "flatbuffers", "import_cmd": "import flatbuffers; print(getattr(flatbuffers, '__version__', 'OK'))"},
-                {"name": "protobuf", "pip": "protobuf>=5,<6", "import_cmd": "from google.protobuf import __version__ as v; print(v)", "min_ver": "5.0.0", "max_ver": "6.0.0"},
-                {"name": "h5py", "pip": "h5py", "import_cmd": "import h5py; print(h5py.__version__)"},
             ],
             "system_libs": [
                 {"name": "libGL.so.1", "check_cmd": "ldconfig -p | grep libGL.so.1", "hint": "OpenCV需要", "fix_pkg": "libgl1-mesa-glx"},
             ],
+        }
+
+    def _get_conversion_env_spec(self):
+        """转换环境规则源：仅用于 TFLite 转换的依赖检查"""
+        return {
+            "python_packages": [
+                {"name": "pyyaml", "pip": "pyyaml", "import_cmd": 'import yaml; print("OK")'},
+                {"name": "numpy", "pip": "numpy==1.26.4", "import_cmd": "import numpy; print(numpy.__version__)", "min_ver": "1.26.0", "max_ver": "2.0.0"},
+                {"name": "cv2", "pip": "opencv-python==4.7.0.72", "import_cmd": "import cv2; print(cv2.__version__)"},
+                {"name": "PIL", "pip": "pillow", "import_cmd": "from PIL import Image; print(Image.__version__)"},
+                {"name": "ultralytics", "pip": "ultralytics", "import_cmd": "import ultralytics; print(ultralytics.__version__)"},
+                {"name": "onnx", "pip": "onnx", "import_cmd": "import onnx; print(onnx.__version__)"},
+                {"name": "onnxsim", "pip": "onnxsim", "import_cmd": "import onnxsim; print(onnxsim.__version__)"},
+                {"name": "tensorflow", "pip": "tensorflow>=2.19,<2.20", "import_cmd": "import tensorflow; print(tensorflow.__version__)", "min_ver": "2.19.0", "max_ver": "2.20.0"},
+                {"name": "tf-keras", "pip": "tf-keras>=2.19,<2.20", "import_cmd": "import tf_keras; print(tf_keras.__version__)", "min_ver": "2.19.0", "max_ver": "2.20.0"},
+                {"name": "onnx2tf", "pip": "onnx2tf>=1.28.8,<1.29", "import_cmd": "import onnx2tf; print(onnx2tf.__version__)", "min_ver": "1.28.8", "max_ver": "1.29.0"},
+                {"name": "ai-edge-litert", "pip": "ai-edge-litert", "import_cmd": "import ai_edge_litert; print(getattr(ai_edge_litert, '__version__', 'OK'))"},
+                {"name": "flatbuffers", "pip": "flatbuffers", "import_cmd": "import flatbuffers; print(getattr(flatbuffers, '__version__', 'OK'))"},
+                {"name": "protobuf", "pip": "protobuf>=5,<6", "import_cmd": "from google.protobuf import __version__ as v; print(v)", "min_ver": "5.0.0", "max_ver": "6.0.0"},
+                {"name": "h5py", "pip": "h5py", "import_cmd": "import h5py; print(h5py.__version__)"},
+            ],
+        }
+
+    def check_conversion_environment(self, python_cmd, log_callback=None):
+        """检查转换环境依赖是否完整"""
+        def _log(msg):
+            if log_callback:
+                log_callback(msg)
+
+        spec = self._get_conversion_env_spec()
+        missing = []
+        versions = {}
+
+        for pkg in spec["python_packages"]:
+            escaped_cmd = pkg["import_cmd"].replace('"', '\\"')
+            cmd = f'{python_cmd} -c "{escaped_cmd}"'
+            ok, out = self.server_manager.execute_command(cmd, timeout=30)
+
+            if not ok:
+                reason = self._first_import_error_line(out)
+                missing.append({"type": "python", "name": pkg["name"], "reason": reason, "pip": pkg["pip"]})
+                _log(f"  ❌ {pkg['name']}: 未安装/不可用（{reason}）")
+                continue
+
+            cur_ver = out.splitlines()[0].strip() if out else "OK"
+            versions[pkg["name"]] = cur_ver
+            ver_reason = self._version_reason(cur_ver, pkg)
+            if ver_reason:
+                missing.append({"type": "python", "name": pkg["name"], "reason": ver_reason, "pip": pkg["pip"]})
+                _log(f"  ❌ {pkg['name']}: {ver_reason}")
+            else:
+                _log(f"  ✅ {pkg['name']}: {cur_ver}")
+
+        return {
+            "missing": missing,
+            "versions": versions,
+            "errors": [f"{m['name']}: {m['reason']}" for m in missing]
         }
 
     def _is_benign_import_stderr_line(self, line):

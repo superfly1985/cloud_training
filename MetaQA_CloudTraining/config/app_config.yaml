@@ -1,0 +1,32 @@
+server:
+  host: "0.0.0.0"
+  port: 8090
+  debug: false
+
+data:
+  base_path: "./data"
+  datasets_path: "./data/datasets"
+  runs_path: "./data/runs"
+  pretrained_path: "./data/pretrained"
+  temp_path: "./data/temp"
+  logs_path: "./data/logs"
+  db_path: "./data/db"
+
+training:
+  default_epochs: 100
+  default_batch: 16
+  default_imgsz: 640
+  default_lr0: 0.01
+  default_val_ratio: 0.2
+  default_split_seed: 42
+  default_patience: 50
+
+convert:
+  python_export_cmd: "/root/miniforge3/envs/cloud-conversion/bin/python"
+  tflite_format: "fp16"
+
+logging:
+  level: "INFO"
+  file: "./data/logs/app.log"
+  max_size: "100 MB"
+  backup_count: 10

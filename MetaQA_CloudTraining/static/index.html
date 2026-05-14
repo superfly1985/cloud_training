@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="description" content="YOLO云算 - 云端训练平台 - 数据集管理、模型训练、产物包管理">
+  <title>YOLO云算 - 云端训练平台</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳转到主内容</a>
+
+  <div id="app">
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }" role="navigation" aria-label="主导航">
+      <div class="sidebar-header">
+        <span class="sidebar-logo" v-if="!sidebarCollapsed">YOLO云算</span>
+        <span class="sidebar-logo-mini" v-else>云</span>
+        <button class="sidebar-toggle"
+                @click="toggleSidebar"
+                :aria-label="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'"
+                :title="sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+          <i class="bi" :class="sidebarCollapsed ? 'bi-chevron-right' : 'bi-chevron-left'" aria-hidden="true"></i>
+        </button>
+      </div>
+      <nav>
+        <ul role="list">
+          <li v-for="item in navItems" :key="item.id">
+            <a :href="'#/' + item.id"
+               class="nav-item"
+               :class="{ active: currentTab === item.id }"
+               :aria-current="currentTab === item.id ? 'page' : undefined"
+               @click.prevent="navigateTo(item.id)">
+              <i class="bi" :class="item.icon" aria-hidden="true"></i>
+              <span class="nav-label" v-if="!sidebarCollapsed">{{ item.label }}</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <span v-if="!sidebarCollapsed">v{{ appVersion }}</span>
+        <span v-else>{{ appVersion.split('.').slice(0, 2).join('.') }}</span>
+      </div>
+    </aside>
+
+    <div class="main-wrapper" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+      <header class="top-bar" role="banner">
+        <div class="top-bar-left">
+          <span class="status-indicator" :class="systemStatus.status === 'ready' ? 'status-ok' : 'status-warn'"
+                :aria-label="'系统状态: ' + systemStatus.statusText">
+          </span>
+          <span class="status-text">{{ systemStatus.statusText }}</span>
+        </div>
+        <div class="top-bar-right">
+          <span class="top-stat" aria-label="GPU 利用率">
+            <i class="bi bi-gpu-card" aria-hidden="true"></i>
+            <span class="numeric">{{ systemStatus.gpuUsage }}%</span>
+          </span>
+          <span class="top-stat" aria-label="磁盘使用">
+            <i class="bi bi-hdd" aria-hidden="true"></i>
+            <span class="numeric">{{ systemStatus.diskUsage }}%</span>
+          </span>
+          <span class="top-stat" aria-label="运行中任务">
+            <i class="bi bi-play-circle" aria-hidden="true"></i>
+            <span class="numeric">{{ systemStatus.runningTasks }}</span>
+          </span>
+        </div>
+      </header>
+
+      <main id="main-content" class="content-area" role="main">
+        <div class="content-inner">
+          <dashboard-tab v-if="currentTab === 'dashboard'"></dashboard-tab>
+          <dataset-tab v-if="currentTab === 'dataset'"></dataset-tab>
+          <training-tab v-if="currentTab === 'training'"></training-tab>
+          <package-tab v-if="currentTab === 'package'"></package-tab>
+          <system-tab v-if="currentTab === 'system'"></system-tab>
+        </div>
+      </main>
+    </div>
+
+    <create-dataset-modal v-if="showCreateDatasetModal" @close="showCreateDatasetModal = false"></create-dataset-modal>
+    <merge-dataset-modal v-if="showMergeDatasetModal" @close="showMergeDatasetModal = false"></merge-dataset-modal>
+    <new-training-modal v-if="showNewTrainingModal" @close="showNewTrainingModal = false"></new-training-modal>
+    <training-log-modal v-if="showTrainingLogModal" :task-id="activeTaskId" @close="showTrainingLogModal = false"></training-log-modal>
+    <training-chart-modal v-if="showTrainingChartModal" :task-id="activeTaskId" @close="showTrainingChartModal = false"></training-chart-modal>
+    <package-detail-modal v-if="showPackageDetailModal" :package-id="activePackageId" @close="showPackageDetailModal = false"></package-detail-modal>
+    <confirm-modal v-if="showConfirmModal" :config="confirmConfig" @confirm="handleConfirm" @cancel="showConfirmModal = false"></confirm-modal>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/app.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/dataset-tab.js"></script>
+  <script src="/static/js/training-tab.js"></script>
+  <script src="/static/js/package-tab.js"></script>
+  <script src="/static/js/system-tab.js"></script>
+  <script src="/static/js/modals.js"></script>
+</body>
+</html>
