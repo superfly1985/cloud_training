@@ -26,6 +26,8 @@ from src.core.training_log_manager import TrainingLogManager
 from src.core.training_progress_manager import TrainingProgressManager
 from src.utils.notifier import Notifier
 
+APP_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 class Application:
     """应用程序主类"""
 
@@ -37,7 +39,7 @@ class Application:
         except Exception:
             pass
 
-        self.config_manager = ConfigManager()
+        self.config_manager = ConfigManager(os.path.join(APP_BASE_DIR, "cloud_training_config.json"))
         self.server_manager = ServerManager(self.config_manager)
         self.dataset_manager = DatasetManager(self.config_manager)
         self.environment_manager = EnvironmentManager(self.server_manager)
@@ -49,7 +51,9 @@ class Application:
         self.training_monitor_manager = TrainingMonitorManager(self.server_manager)
         self.model_download_manager = ModelDownloadManager(self.server_manager)
         self.config_binding_manager = ConfigBindingManager()
-        self.training_log_manager = TrainingLogManager(archive_dir="logs")
+        self.training_log_manager = TrainingLogManager(
+            archive_dir=os.path.join(APP_BASE_DIR, "logs")
+        )
         self.training_progress_manager = TrainingProgressManager()
 
         self.root = ttkb.Window(themename="cosmo")

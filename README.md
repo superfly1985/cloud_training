@@ -1,86 +1,97 @@
-# 云端训练管理平台
+# 云端训练仓库说明
 
-## 项目简介
+这个仓库现在同时包含两条产品线：
 
-基于YOLOv8的云端训练管理GUI工具，支持服务器配置、数据集管理、训练监控和模型下载等功能。
+- `MetaQA_CloudTraining/`：当前主产品，Web 版云端训练管理平台
+- `legacy/local_desktop/`：旧本地版桌面工具，保留为可运行、可打包的遗留版本
 
-## 版本信息
+日常开发默认以 Web 版为主，只有在查旧逻辑、兼容旧流程或重新打包旧桌面版时，
+才进入 `legacy/local_desktop/`。
 
-- **当前版本**: v3.0.0
-- **主要功能**: 云端训练、实时监控、模型管理、监控大屏、图像增强参数配置（含激活控制）（纯云端模式）
-- **架构特点**: 模块化设计，UI与业务逻辑完全分离
+## 当前结构
 
-## 目录结构
+仓库根目录现在按职责分层：
 
-```
-.
-├── cloud_training_gui.py      # 主程序入口
-├── cloud_training_config.json # 配置文件
-├── cloud_training_gui.spec    # PyInstaller打包配置
-├── requirements.txt           # Python依赖
-├── README.md                  # 项目说明
-│
-├── src/                       # 源代码模块（预留）
-├── tools/                     # 工具脚本
-│   ├── check_server_env.py    # 服务器环境检查
-│   ├── export_model.py        # 模型导出
-│   └── train_yolov8.py        # 本地训练脚本
-│
-├── test/                      # 测试相关
-│   ├── logs/                  # 测试日志
-│   ├── mock_dataset/          # 测试数据集
-│   └── scripts/               # 测试脚本
-│
-├── docs/                      # 文档
-│   ├── 使用说明/              # 用户使用文档
-│   └── 开发文档/              # 开发相关文档
-│
-├── assets/                    # 资源文件
-│   ├── yolov8n.pt            # 预训练模型
-│   └── icons/                # 图标资源
-│
-└── release/                   # 发布文件
+```text
+03.云端训练/
+├── MetaQA_CloudTraining/       # 当前主产品：Web 版
+├── legacy/
+│   └── local_desktop/          # 旧本地版：可运行、可打包
+├── test/
+│   ├── probes/                 # 保留的排障/探针脚本
+│   └── samples/                # 少量测试样本
+├── README.md
+└── changelog.md
 ```
 
-## 快速开始
+## Web 版
 
-### 1. 安装依赖
+`MetaQA_CloudTraining/` 是当前主工作区，包含：
+
+- FastAPI 后端
+- Vue CDN 前端
+- 部署工具
+- Web 版设计文档与实施计划
+
+常用入口：
 
 ```bash
-pip install -r requirements.txt
+cd MetaQA_CloudTraining
+python run.py
 ```
 
-### 2. 运行程序
+详细结构请看：
+
+- `MetaQA_CloudTraining/doc/webUI方案集/01-目录结构.md`
+
+## 旧本地版
+
+旧本地版已经迁移到 `legacy/local_desktop/`，并继续保留运行与打包能力。
+
+常用文件：
+
+- `legacy/local_desktop/main.py`
+- `legacy/local_desktop/src/`
+- `legacy/local_desktop/cloud_training.spec`
+- `legacy/local_desktop/cloud_training_config.json`
+- `legacy/local_desktop/setup_env.ps1`
+
+### 运行
 
 ```bash
-python cloud_training_gui.py
+python legacy/local_desktop/main.py
 ```
 
-### 3. 打包发布
+### 安装依赖
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\legacy\local_desktop\setup_env.ps1
+```
+
+### 打包
 
 ```bash
-pyinstaller cloud_training_gui.spec
+pyinstaller legacy/local_desktop/cloud_training.spec
 ```
 
-## 主要功能
+发布规则仍保持原约定：
 
-- **服务器管理**: SSH连接配置、连接测试
-- **数据集管理**: 本地检查、云端上传、差异对比
-- **环境管理**: 云端环境检查、自动修复
-- **训练控制**: 开始/停止训练、参数配置
-- **实时监控**: GPU状态、训练进度、损失曲线
-- **模型管理**: 训练结果查看、模型下载
+- 使用 PyInstaller `onedir` 模式
+- 发布目录使用 `release/`
+- 目录命名遵循 `云端训练<版本号>`
 
-## 使用说明
+## test 目录
 
-详细使用说明请参考 `docs/使用说明/` 目录下的文档。
+根目录 `test/` 只保留仍有价值的内容：
 
-## 开发文档
+- `test/probes/`：复用型排障脚本
+- `test/samples/`：少量样本文件
 
-开发相关文档请参考 `docs/开发文档/` 目录。
+历史输出、缓存、大体积模型对比产物和一次性 json 结果已清理，不再长期堆放在
+根目录。
 
-## 注意事项
+## 开发建议
 
-1. 首次使用前请配置服务器连接信息
-2. 训练前请确保云端环境已正确配置
-3. 建议先执行"检查环境"和"修复环境"后再开始训练
+- Web 版开发优先进入 `MetaQA_CloudTraining/`
+- 旧本地版改动优先控制在 `legacy/local_desktop/`
+- 一次性脚本与临时文件继续放 `test/`，但不要把输出产物长期保留在仓库中

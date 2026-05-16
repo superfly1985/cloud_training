@@ -1,6 +1,13 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Logs
 *.log
@@ -21,4 +28,9 @@ test/
 # IDE/workspace
 .vscode/
 .trae/
+*.code-workspace
+
+# Local desktop / deploy logs
+legacy/local_desktop/logs/
+MetaQA_CloudTraining/deploy_tool/loog.txt
 

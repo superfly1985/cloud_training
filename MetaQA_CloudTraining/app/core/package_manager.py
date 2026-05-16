@@ -193,13 +193,22 @@ def create_package(task_id: str) -> dict:
 
 
 def delete_package(pkg_id: str) -> bool:
+    logger = get_logger()
     conn = get_connection()
     row = conn.execute("SELECT file_path FROM packages WHERE id=?", (pkg_id,)).fetchone()
     if not row:
         return False
 
-    if row["file_path"] and os.path.exists(row["file_path"]):
-        os.remove(row["file_path"])
+    file_path = row["file_path"]
+    if file_path:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError as exc:
+                logger.error(f"删除产物文件失败: {file_path}: {exc}")
+                return False
+        else:
+            logger.warning(f"删除产物时文件不存在: {file_path}")
 
     conn.execute("DELETE FROM packages WHERE id=?", (pkg_id,))
     conn.commit()

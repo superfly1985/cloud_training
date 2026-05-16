@@ -405,6 +405,35 @@ app.component("merge-dataset-modal", {
             </div>
             <div v-if="uploadError" class="form-error" style="margin-top: 12px;">{{ uploadError }}</div>
           </div>
+
+          <div v-if="mergeResult && !uploading" class="merge-result-card">
+            <div class="merge-result-header">
+              <div class="merge-result-title">
+                <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
+                <span>合并完成</span>
+              </div>
+              <div class="merge-result-caption">本次补传结果已更新到目标数据集</div>
+            </div>
+            <div class="merge-result-summary">{{ mergeSummaryText }}</div>
+            <div class="merge-result-grid">
+              <div class="merge-result-stat">
+                <div class="merge-result-stat-label">图片新增</div>
+                <div class="merge-result-stat-value">{{ mergeResult.imagesImported }}</div>
+              </div>
+              <div class="merge-result-stat">
+                <div class="merge-result-stat-label">图片覆盖</div>
+                <div class="merge-result-stat-value">{{ mergeResult.imagesOverwritten }}</div>
+              </div>
+              <div class="merge-result-stat">
+                <div class="merge-result-stat-label">标签新增</div>
+                <div class="merge-result-stat-value">{{ mergeResult.labelsImported }}</div>
+              </div>
+              <div class="merge-result-stat">
+                <div class="merge-result-stat-label">标签覆盖</div>
+                <div class="merge-result-stat-value">{{ mergeResult.labelsOverwritten }}</div>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button v-if="!uploading" class="btn btn-ghost" @click="$emit('close')">取消</button>
@@ -431,6 +460,8 @@ app.component("merge-dataset-modal", {
       uploadSpeed: 0,
       uploadError: "",
       etaText: "…",
+      mergeResult: null,
+      mergeSummaryText: "",
       _cancelUpload: false,
       _speedSamples: [],
       _lastTick: 0,
@@ -454,15 +485,36 @@ app.component("merge-dataset-modal", {
     },
     onFileChange: function (e) {
       var f = e.target.files[0];
+      this.resetMergeResult();
       if (f) {
         this.file = f;
         this.fileName = f.name;
         this.fileSize = f.size;
       }
     },
+    normalizeMergeResult: function (data) {
+      data = data || {};
+      return {
+        imagesImported: Number(data.images_imported || 0),
+        imagesOverwritten: Number(data.images_overwritten || 0),
+        labelsImported: Number(data.labels_imported || 0),
+        labelsOverwritten: Number(data.labels_overwritten || 0),
+      };
+    },
+    buildMergeSummary: function (result) {
+      return "合并完成：图片新增 " + result.imagesImported +
+        "，图片覆盖 " + result.imagesOverwritten +
+        "，标签新增 " + result.labelsImported +
+        "，标签覆盖 " + result.labelsOverwritten;
+    },
+    resetMergeResult: function () {
+      this.mergeResult = null;
+      this.mergeSummaryText = "";
+    },
     submit: function () {
       if (!this.targetId || !this.file) return;
       var self = this;
+      self.resetMergeResult();
       self.submitting = true;
       self._doChunkedUpload(self.file, self.targetId);
     },
@@ -568,7 +620,9 @@ app.component("merge-dataset-modal", {
           self.uploadError = res.message || "合并失败";
           return;
         }
-        self.$emit("close");
+        var mergeResult = self.normalizeMergeResult(res.data);
+        self.mergeResult = mergeResult;
+        self.mergeSummaryText = self.buildMergeSummary(mergeResult);
       }).catch(function (err) {
         if (isUploadCancelled(self, err)) {
           stopUploadSession(self, true);

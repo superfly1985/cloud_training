@@ -4,7 +4,10 @@ import json
 class ConfigManager:
     """配置管理模块"""
     
-    def __init__(self, config_file='cloud_training_config.json'):
+    def __init__(self, config_file=None):
+        if config_file is None:
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+            config_file = os.path.join(base_dir, 'cloud_training_config.json')
         self.config_file = config_file
         
         # 使用与旧版完全一致的键名

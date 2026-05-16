@@ -84,18 +84,25 @@ def create_dataset(name: str, split_ratio: float = 0.8) -> dict:
 
 
 def delete_dataset(ds_id: str) -> bool:
+    logger = get_logger()
     conn = get_connection()
     row = conn.execute("SELECT id FROM datasets WHERE id=? AND status='active'", (ds_id,)).fetchone()
     if not row:
         return False
 
+    ds_dir = os.path.join(get_data_dir("datasets_path"), ds_id)
+    if os.path.isdir(ds_dir):
+        try:
+            shutil.rmtree(ds_dir)
+        except OSError as exc:
+            logger.error(f"删除数据集目录失败: {ds_dir}: {exc}")
+            return False
+    else:
+        logger.warning(f"删除数据集时目录不存在: {ds_dir}")
+
     conn.execute("UPDATE datasets SET status='deleted', updated_at=? WHERE id=?", (now_iso(), ds_id))
     conn.execute("DELETE FROM images WHERE dataset_id=?", (ds_id,))
     conn.commit()
-
-    ds_dir = os.path.join(get_data_dir("datasets_path"), ds_id)
-    if os.path.isdir(ds_dir):
-        shutil.rmtree(ds_dir, ignore_errors=True)
     return True
 
 
@@ -153,7 +160,7 @@ def delete_images(ds_id: str, image_ids: list) -> int:
     return deleted
 
 
-def import_zip(ds_id: str, zip_path: str) -> dict:
+def import_zip(ds_id: str, zip_path: str, skip_existing: bool = False) -> dict:
     logger = get_logger()
     conn = get_connection()
     ds = get_dataset(ds_id)
@@ -178,6 +185,7 @@ def import_zip(ds_id: str, zip_path: str) -> dict:
 
     img_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     count = 0
+    skipped = 0
     classes_set = set()
 
     for root, dirs, files in os.walk(temp_dir):
@@ -187,6 +195,9 @@ def import_zip(ds_id: str, zip_path: str) -> dict:
             if ext in img_exts:
                 dst = os.path.join(img_dir, f)
                 if os.path.exists(dst):
+                    if skip_existing:
+                        skipped += 1
+                        continue
                     base, e = os.path.splitext(f)
                     dst = os.path.join(img_dir, f"{base}_{gen_id()}{e}")
                 shutil.move(src, dst)
@@ -226,12 +237,139 @@ def import_zip(ds_id: str, zip_path: str) -> dict:
     _refresh_dataset_stats(ds_id)
     conn.commit()
 
-    logger.info(f"数据集 {ds_id} 导入完成: {count} 张图片")
-    return {"imported": count}
+    logger.info(f"数据集 {ds_id} 导入完成: {count} 张图片, 跳过重复 {skipped} 张")
+    return {"imported": count, "skipped": skipped}
 
 
 def merge_dataset(target_id: str, zip_path: str) -> dict:
-    return import_zip(target_id, zip_path)
+    logger = get_logger()
+    conn = get_connection()
+    ds = get_dataset(target_id)
+    if not ds:
+        raise ValueError(f"数据集不存在: {target_id}")
+
+    ds_dir = os.path.join(get_data_dir("datasets_path"), target_id)
+    img_dir = os.path.join(ds_dir, "images")
+    lbl_dir = os.path.join(ds_dir, "labels")
+    ensure_dir(img_dir)
+    ensure_dir(lbl_dir)
+
+    temp_dir = os.path.join(get_data_dir("temp_path"), f"merge_{target_id}")
+    ensure_dir(temp_dir)
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(temp_dir)
+    except zipfile.BadZipFile:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise ValueError("无效的 ZIP 文件")
+
+    result = _merge_extracted_dataset_into_target(target_id, temp_dir, img_dir, lbl_dir, conn)
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    _refresh_dataset_stats(target_id)
+    conn.commit()
+
+    logger.info(
+        "数据集 %s 合并完成: 图片新增 %s, 图片覆盖 %s, 标签新增 %s, 标签覆盖 %s",
+        target_id,
+        result["images_imported"],
+        result["images_overwritten"],
+        result["labels_imported"],
+        result["labels_overwritten"],
+    )
+    return result
+
+
+def _merge_extracted_dataset_into_target(ds_id: str, temp_dir: str, img_dir: str, lbl_dir: str, conn) -> dict:
+    img_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    result = {
+        "imported": 0,
+        "images_imported": 0,
+        "images_overwritten": 0,
+        "labels_imported": 0,
+        "labels_overwritten": 0,
+    }
+    touched_bases = set()
+
+    for root, dirs, files in os.walk(temp_dir):
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in img_exts:
+                continue
+
+            src = os.path.join(root, f)
+            dst = os.path.join(img_dir, f)
+            existed = os.path.exists(dst)
+            if existed:
+                os.remove(dst)
+                result["images_overwritten"] += 1
+            else:
+                result["images_imported"] += 1
+            shutil.move(src, dst)
+
+            row = conn.execute(
+                "SELECT id FROM images WHERE dataset_id=? AND filename=?",
+                (ds_id, f),
+            ).fetchone()
+            if not row:
+                conn.execute(
+                    "INSERT INTO images (id, dataset_id, filename, size, annotated, split_type, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        f"{ds_id}-img-{gen_id()}",
+                        ds_id,
+                        f,
+                        os.path.getsize(dst),
+                        0,
+                        "",
+                        now_iso(),
+                    ),
+                )
+                result["imported"] += 1
+
+            touched_bases.add(os.path.splitext(f)[0])
+
+    for root, dirs, files in os.walk(temp_dir):
+        for f in files:
+            if not f.endswith(".txt"):
+                continue
+
+            src = os.path.join(root, f)
+            dst = os.path.join(lbl_dir, f)
+            if os.path.exists(dst):
+                os.remove(dst)
+                result["labels_overwritten"] += 1
+            else:
+                result["labels_imported"] += 1
+            shutil.move(src, dst)
+            touched_bases.add(os.path.splitext(f)[0])
+
+    for base_name in touched_bases:
+        image_filename = _find_existing_image_filename(img_dir, base_name)
+        if not image_filename:
+            continue
+        img_path = os.path.join(img_dir, image_filename)
+        lbl_path = os.path.join(lbl_dir, base_name + ".txt")
+        conn.execute(
+            "UPDATE images SET size=?, annotated=? WHERE dataset_id=? AND filename=?",
+            (
+                os.path.getsize(img_path),
+                int(os.path.exists(lbl_path)),
+                ds_id,
+                image_filename,
+            ),
+        )
+
+    return result
+
+
+def _find_existing_image_filename(img_dir: str, base_name: str) -> str | None:
+    if not os.path.isdir(img_dir):
+        return None
+    for f in os.listdir(img_dir):
+        if os.path.splitext(f)[0] == base_name:
+            return f
+    return None
 
 
 def _find_label(search_dir: str, base_name: str) -> str | None:
