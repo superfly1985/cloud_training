@@ -62,6 +62,9 @@
 | `/api/v1/datasets` | POST | 创建数据集（本地扫描） |
 | `/api/v1/datasets/{dataset_id}` | DELETE | 删除数据集 |
 | `/api/v1/datasets/{dataset_id}/images` | DELETE | 删除图片 |
+| `/api/v1/datasets/{dataset_id}/images` | GET | 列出图片（分页） |
+| `/api/v1/datasets/{dataset_id}/images/{filename}/labels` | GET | 获取图片标注数据 |
+| `/api/v1/datasets/{dataset_id}/images/{filename}/file` | GET | 获取图片文件 |
 | `/api/v1/datasets/{dataset_id}/export` | GET | 导出数据集 |
 
 ### 3.1 上传前预检查
@@ -164,7 +167,7 @@
   "data": {
     "success": true,
     "dataset_id": "dataset_001",
-    "extracted_path": "/opt/cloud-training/data/datasets/焊点漏包"
+    "extracted_path": "/home/ubuntu/cloud-training-runtime/MetaQA_CloudTraining/data/datasets/焊点漏包"
   }
 }
 ```
@@ -218,6 +221,124 @@
 }
 ```
 
+### 3.7 列出图片（分页）
+
+**请求**: `GET /api/v1/datasets/{dataset_id}/images?page=1&page_size=20`
+
+**查询参数**:
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `page` | int | 1 | 页码 |
+| `page_size` | int | 20 | 每页数量（1-100） |
+
+**响应**:
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "images": [
+      {
+        "filename": "img001.jpg",
+        "size": 131072,
+        "has_label": true
+      }
+    ],
+    "total": 680,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+### 3.8 获取图片标注数据
+
+**请求**: `GET /api/v1/datasets/{dataset_id}/images/{filename}/labels`
+
+**响应**:
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "labels": [
+      {
+        "class_id": 0,
+        "class_name": "焊点漏包",
+        "x_center": 0.512,
+        "y_center": 0.345,
+        "width": 0.089,
+        "height": 0.067
+      }
+    ],
+    "class_names": {
+      "0": "焊点漏包"
+    }
+  }
+}
+```
+
+**响应字段说明**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `labels` | array | 标注列表（YOLO 格式，归一化坐标） |
+| `labels[].class_id` | int | 类别 ID |
+| `labels[].class_name` | string | 类别名称 |
+| `labels[].x_center` | float | 中心点 X（0-1） |
+| `labels[].y_center` | float | 中心点 Y（0-1） |
+| `labels[].width` | float | 宽度（0-1） |
+| `labels[].height` | float | 高度（0-1） |
+| `class_names` | object | 类别 ID→名称映射 |
+
+### 3.9 获取图片文件
+
+**请求**: `GET /api/v1/datasets/{dataset_id}/images/{filename}/file`
+
+**响应**: 图片文件二进制流（`FileResponse`），Content-Type 根据 MIME 类型自动设置（如 `image/jpeg`、`image/png`）。
+
+**错误响应**:
+```json
+{
+  "code": 404,
+  "message": "图片不存在",
+  "data": null
+}
+```
+
+### 3.10 系统状态接口（顶部状态栏）
+
+**请求**: `GET /api/v1/system/status`
+
+**响应**:
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "status": "ready",
+    "statusText": "系统正常",
+    "gpu_usage": 89,
+    "disk_usage": 67,
+    "running_tasks": 2
+  }
+}
+```
+
+**响应字段说明**:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `status` | string | 系统状态（`ready` / `partial` / `failed`） |
+| `statusText` | string | 状态文字（如“系统正常”“部分检查需处理”） |
+| `gpu_usage` | int | GPU 利用率百分比 |
+| `disk_usage` | int | 磁盘使用率百分比 |
+| `running_tasks` | int | 运行中训练任务数 |
+| `python_version` | string | 当前 Web Python 版本 |
+| `cuda_version` | string | 当前检测到的 CUDA 版本 |
+| `ultralytics_version` | string | 当前检测到的 ultralytics 版本 |
+
 ---
 
 ## 4. 训练任务接口
@@ -264,7 +385,7 @@
   "data": {
     "session_id": "train_20260512_103000",
     "status": "started",
-    "run_dir": "/opt/cloud-training/data/runs/train/焊点漏包_v001",
+    "run_dir": "/home/ubuntu/cloud-training-runtime/MetaQA_CloudTraining/data/runs/train_20260512_103000",
     "websocket_url": "ws://localhost:8090/api/v1/training/train_20260512_103000/ws"
   }
 }
@@ -385,55 +506,81 @@
 
 ---
 
-## 6. 系统信息接口
+## 6. 系统接口
+
+当前版本的系统相关接口已经收敛到 `/api/v1/system/*` 这组路由，旧文档中的
+`/system/info`、`/system/gpu`、`/system/disk`、`/system/config`
+不再是当前实现。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/v1/system/info` | GET | 系统信息 |
-| `/api/v1/system/gpu` | GET | GPU状态 |
-| `/api/v1/system/disk` | GET | 磁盘空间 |
-| `/api/v1/system/config` | GET | 系统配置 |
+| `/api/v1/system/status` | GET | 获取顶部状态栏与系统概览信息 |
+| `/api/v1/system/checks` | GET | 获取最近一次环境检查任务 |
+| `/api/v1/system/checks` | POST | 启动环境检查任务 |
+| `/api/v1/system/fix` | POST | 启动自动修复任务 |
+| `/api/v1/system/fix/current` | GET | 获取当前修复任务 |
+| `/api/v1/system/fix/{task_id}` | GET | 查询指定修复任务状态 |
+| `/api/v1/system/fix/{task_id}/log` | GET | 下载修复日志 |
 
-### 6.1 GPU状态
+### 6.1 环境检查任务
 
-**请求**: `GET /api/v1/system/gpu`
+**请求**: `GET /api/v1/system/checks`
 
 **响应**:
 ```json
 {
-  "code": 200,
-  "message": "success",
+  "code": 0,
+  "message": "ok",
   "data": {
-    "gpu_count": 1,
-    "gpus": [
+    "task_id": "check-001",
+    "status": "success",
+    "statusText": "环境检查完成",
+    "summary": {
+      "status": "ready",
+      "statusText": "系统正常"
+    },
+    "checks": [
       {
-        "index": 0,
-        "name": "NVIDIA Tesla T4",
-        "memory_total": "15360 MB",
-        "memory_used": "2 MB",
-        "memory_free": "14926 MB",
-        "utilization": "0%",
-        "temperature": "37°C"
+        "name": "训练环境",
+        "status": "pass",
+        "message": "训练环境可用",
+        "auto_fixable": true,
+        "blocking": true
       }
     ]
   }
 }
 ```
 
-### 6.2 磁盘空间
+### 6.2 自动修复任务
 
-**请求**: `GET /api/v1/system/disk`
+**请求**: `GET /api/v1/system/fix/{task_id}`
 
 **响应**:
 ```json
 {
-  "code": 200,
-  "message": "success",
+  "code": 0,
+  "message": "ok",
   "data": {
-    "total": "49 GB",
-    "used": "21 GB",
-    "free": "27 GB",
-    "usage_percent": "44%"
+    "task_id": "fix-001",
+    "status": "repairing",
+    "statusText": "开始自动修复",
+    "current_step": "同步训练依赖",
+    "current_step_index": 5,
+    "total_steps": 9,
+    "percent": 55,
+    "elapsed_seconds": 96,
+    "steps": [
+      { "name": "检查固定路径", "status": "success" },
+      { "name": "检查训练环境", "status": "success" },
+      { "name": "检查转换环境", "status": "success" },
+      { "name": "创建缺失环境", "status": "success" },
+      { "name": "同步训练依赖", "status": "running" }
+    ],
+    "logs": [
+      "[10:30:00] 开始自动修复",
+      "[10:30:12] [步骤] 同步训练依赖"
+    ]
   }
 }
 ```

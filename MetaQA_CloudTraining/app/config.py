@@ -25,6 +25,11 @@ def _resolve_paths():
         raw = _config["data"].get(key, "")
         if raw and not os.path.isabs(raw):
             _config["data"][key] = os.path.normpath(os.path.join(PROJECT_ROOT, raw))
+    runtime = _config.get("runtime", {})
+    for key in ("deploy_state_path", "init_state_path", "env_snapshot_dir"):
+        raw = runtime.get(key, "")
+        if raw and not os.path.isabs(raw):
+            runtime[key] = os.path.normpath(os.path.join(PROJECT_ROOT, raw))
 
 
 def get_config():
@@ -39,4 +44,15 @@ def get_data_dir(key: str) -> str:
     path = cfg["data"].get(key, "")
     if path:
         os.makedirs(path, exist_ok=True)
+    return path
+
+
+def get_runtime_path(key: str) -> str:
+    cfg = get_config()
+    runtime = cfg.get("runtime", {})
+    path = runtime.get(key, "")
+    if path:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
     return path

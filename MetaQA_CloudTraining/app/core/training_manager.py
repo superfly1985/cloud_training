@@ -1,12 +1,15 @@
 import os
 import subprocess
 import signal
+import shutil
+import sys
 import yaml
 
 from app.models.database import get_connection, now_iso
 from app.utils.logger import get_logger
 from app.utils.helpers import gen_id, ensure_dir
 from app.config import get_data_dir, get_config
+from app.core.system_manager import FIXED_TRAINING_PYTHON
 
 
 def list_tasks() -> list:
@@ -96,6 +99,7 @@ def stop_task(task_id: str) -> bool:
 
 def _start_training(task_id: str):
     conn = get_connection()
+    logger = get_logger()
     row = conn.execute("SELECT * FROM training_tasks WHERE id=?", (task_id,)).fetchone()
     if not row:
         return
@@ -107,17 +111,35 @@ def _start_training(task_id: str):
     _generate_data_yaml(ds_id, ds_dir, data_yaml)
 
     run_dir = row["run_dir"]
-    script_path = _generate_train_script(row, data_yaml, run_dir)
+    run_data_yaml = os.path.join(run_dir, "data.yaml")
+    effective_data_yaml = data_yaml
+    if os.path.exists(data_yaml):
+        shutil.copy2(data_yaml, run_data_yaml)
+        effective_data_yaml = run_data_yaml
+    script_path = _generate_train_script(row, effective_data_yaml, run_dir)
 
     log_path = os.path.join(run_dir, "train.log")
     log_f = open(log_path, "w", encoding="utf-8")
+    python_cmd = _get_training_python_cmd()
 
-    proc = subprocess.Popen(
-        ["python", "-u", script_path],
-        stdout=log_f,
-        stderr=subprocess.STDOUT,
-        cwd=run_dir,
-    )
+    try:
+        proc = subprocess.Popen(
+            [python_cmd, "-u", script_path],
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            cwd=run_dir,
+        )
+    except Exception as e:
+        log_f.write(f"训练启动失败: {e}\n")
+        log_f.flush()
+        log_f.close()
+        conn.execute(
+            "UPDATE training_tasks SET status='failed', pid=0, completed_at=? WHERE id=?",
+            (now_iso(), task_id),
+        )
+        conn.commit()
+        logger.exception(f"启动训练任务失败: {task_id}")
+        return
 
     now = now_iso()
     conn.execute(
@@ -131,16 +153,15 @@ def _start_training(task_id: str):
     def _watch():
         proc.wait()
         log_f.close()
-        final_status = "completed" if proc.returncode == 0 else "failed"
-        c = get_connection()
-        c.execute(
-            "UPDATE training_tasks SET status=?, completed_at=? WHERE id=?",
-            (final_status, now_iso(), task_id),
-        )
-        c.commit()
+        _finalize_task_after_training(task_id, proc.returncode)
 
     t = threading.Thread(target=_watch, daemon=True)
     t.start()
+
+
+def _get_training_python_cmd() -> str:
+    cfg = get_config()
+    return cfg.get("training", {}).get("python_cmd") or FIXED_TRAINING_PYTHON
 
 
 def _generate_data_yaml(ds_id: str, ds_dir: str, output_path: str):
@@ -209,12 +230,13 @@ def _generate_data_yaml(ds_id: str, ds_dir: str, output_path: str):
 
 
 def _generate_train_script(task_row, data_yaml: str, run_dir: str) -> str:
+    model_ref = _resolve_pretrained_model(task_row["model_size"])
     script = f"""
 import sys
 sys.path.insert(0, '.')
 from ultralytics import YOLO
 
-model = YOLO('yolov8{task_row['model_size']}.pt')
+model = YOLO(r'{model_ref}')
 results = model.train(
     data='{data_yaml}',
     epochs={task_row['epochs']},
@@ -232,6 +254,51 @@ results = model.train(
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(script)
     return script_path
+
+
+def _resolve_pretrained_model(model_size: str) -> str:
+    filename = f"yolov8{model_size}.pt"
+    pretrained_dir = get_data_dir("pretrained_path")
+    model_path = os.path.join(pretrained_dir, filename)
+    if os.path.exists(model_path):
+        return os.path.abspath(model_path)
+    return filename
+
+
+def _finalize_task_after_training(task_id: str, returncode: int):
+    conn = get_connection()
+    logger = get_logger()
+
+    if returncode != 0:
+        conn.execute(
+            "UPDATE training_tasks SET status='failed', pid=0, package_ready=0, package_id='', completed_at=? WHERE id=?",
+            (now_iso(), task_id),
+        )
+        conn.commit()
+        return
+
+    conn.execute(
+        "UPDATE training_tasks SET status='converting', pid=0, package_ready=0, package_id='', completed_at='' WHERE id=?",
+        (task_id,),
+    )
+    conn.commit()
+
+    try:
+        from app.core.package_manager import ensure_package
+
+        pkg = ensure_package(task_id)
+        conn.execute(
+            "UPDATE training_tasks SET status='completed', package_ready=1, package_id=?, completed_at=? WHERE id=?",
+            (pkg["id"], now_iso(), task_id),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"训练完成后自动打包失败: {task_id}: {e}")
+        conn.execute(
+            "UPDATE training_tasks SET status='failed', package_ready=0, package_id='', completed_at=? WHERE id=?",
+            (now_iso(), task_id),
+        )
+        conn.commit()
 
 
 def _row_to_dict(r) -> dict:
@@ -252,6 +319,9 @@ def _row_to_dict(r) -> dict:
         "map50_95": r["map50_95"],
         "box_loss": r["box_loss"],
         "cls_loss": r["cls_loss"],
+        "dfl_loss": r["dfl_loss"] if "dfl_loss" in r.keys() else 0,
+        "package_ready": bool(r["package_ready"]) if "package_ready" in r.keys() else False,
+        "package_id": r["package_id"] if "package_id" in r.keys() else "",
         "created_at": r["created_at"],
         "started_at": r["started_at"],
         "completed_at": r["completed_at"],

@@ -1,7 +1,11 @@
+app:
+  version: "v0.1.0"
+
 server:
   host: "0.0.0.0"
   port: 8090
   debug: false
+  python_cmd: ""
 
 data:
   base_path: "./data"
@@ -13,6 +17,7 @@ data:
   db_path: "./data/db"
 
 training:
+  python_cmd: ""
   default_epochs: 100
   default_batch: 16
   default_imgsz: 640
@@ -22,8 +27,14 @@ training:
   default_patience: 50
 
 convert:
-  python_export_cmd: "/root/miniforge3/envs/cloud-conversion/bin/python"
+  python_export_cmd: ""
   tflite_format: "fp16"
+
+runtime:
+  conda_cmd: ""
+  deploy_state_path: "./data/deploy_state.json"
+  init_state_path: "./data/init_state.json"
+  env_snapshot_dir: "./data/logs"
 
 logging:
   level: "INFO"

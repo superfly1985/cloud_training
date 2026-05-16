@@ -61,6 +61,7 @@ class TrainingInfo(BaseModel):
     map50_95: float = 0
     box_loss: float = 0
     cls_loss: float = 0
+    dfl_loss: float = 0
     created_at: str
     started_at: str = ""
     completed_at: str = ""
@@ -73,6 +74,9 @@ class PackageInfo(BaseModel):
     version: str
     size: int = 0
     map_val: float = 0
+    box_loss: Optional[float] = None
+    cls_loss: Optional[float] = None
+    dfl_loss: Optional[float] = None
     training_time: str = ""
     created_at: str
     files: List[dict] = []

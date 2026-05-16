@@ -15,6 +15,8 @@ app.component("training-tab", {
           <select class="filter-select" v-model="statusFilter" aria-label="状态筛选">
             <option value="">全部状态</option>
             <option value="running">运行中</option>
+            <option value="converting">转换中</option>
+            <option value="packaging">打包中</option>
             <option value="completed">已完成</option>
             <option value="stopped">已停止</option>
             <option value="failed">失败</option>
@@ -44,7 +46,7 @@ app.component("training-tab", {
                 <th>版本</th>
                 <th>模型</th>
                 <th>进度</th>
-                <th>mAP@50</th>
+                <th>损失值</th>
                 <th>状态</th>
                 <th>创建时间</th>
                 <th style="width: 160px;">操作</th>
@@ -64,7 +66,13 @@ app.component("training-tab", {
                   </div>
                   <span v-else style="font-size: 12px; color: var(--color-text-muted);">-</span>
                 </td>
-                <td class="numeric">{{ task.status !== 'running' || task.current_epoch > 0 ? task.map50.toFixed(4) : '-' }}</td>
+                <td class="numeric">
+                  <div class="loss-stack">
+                    <div>box: {{ formatLoss(task.box_loss) }}</div>
+                    <div>cls: {{ formatLoss(task.cls_loss) }}</div>
+                    <div>dfl: {{ formatLoss(task.dfl_loss) }}</div>
+                  </div>
+                </td>
                 <td>
                   <span class="badge" :class="statusBadgeClass(task.status)">{{ statusText(task.status) }}</span>
                 </td>
@@ -80,7 +88,7 @@ app.component("training-tab", {
                     <button class="btn btn-sm btn-ghost" @click="showChart(task)" aria-label="曲线">
                       <i class="bi bi-graph-up" aria-hidden="true"></i>
                     </button>
-                    <button v-if="task.status === 'completed'" class="btn btn-sm btn-ghost" @click="goToPackage(task)" aria-label="查看产物">
+                    <button v-if="task.package_ready && task.package_id" class="btn btn-sm btn-ghost" @click="goToPackage(task)" aria-label="查看产物">
                       <i class="bi bi-box-seam" aria-hidden="true"></i>
                     </button>
                   </div>
@@ -120,6 +128,8 @@ app.component("training-tab", {
       page: 1,
       pageSize: 15,
       jumpPage: 1,
+      _pollTimer: null,
+      _loadingPromise: null,
     };
   },
   computed: {
@@ -157,26 +167,70 @@ app.component("training-tab", {
     statusFilter: function () {
       this.page = 1;
     },
+    "$root.showNewTrainingModal": function (newVal) {
+      if (!newVal) this.load();
+    },
   },
   methods: {
     formatDate: function (iso) {
       return API.formatDate(iso);
     },
+    formatLoss: function (value) {
+      if (value === null || value === undefined || value === "") return "-";
+      var num = Number(value);
+      return Number.isFinite(num) && num > 0 ? num.toFixed(3) : "-";
+    },
     statusBadgeClass: function (status) {
-      var map = { running: "badge-info", completed: "badge-success", stopped: "badge-warning", failed: "badge-danger" };
+      var map = { pending: "badge-warning", running: "badge-info", converting: "badge-info", packaging: "badge-info", completed: "badge-success", stopped: "badge-warning", failed: "badge-danger" };
       return map[status] || "badge-secondary";
     },
     statusText: function (status) {
-      var map = { running: "运行中", completed: "已完成", stopped: "已停止", failed: "失败" };
+      var map = { pending: "待启动", running: "训练中", converting: "转换中", packaging: "打包中", completed: "已完成", stopped: "已停止", failed: "失败" };
       return map[status] || status;
     },
-    load: function () {
+    load: function (silent) {
       var self = this;
-      self.loading = true;
-      API.getTrainingTasks().then(function (res) {
-        self.tasks = res.data.tasks;
-        self.loading = false;
+      if (self._loadingPromise) return self._loadingPromise;
+      if (!silent) self.loading = true;
+      self._loadingPromise = API.getTrainingTasks()
+        .then(function (res) {
+          self.tasks = (res.data && res.data.tasks) || [];
+          return self.refreshActiveTasks();
+        })
+        .finally(function () {
+          self.loading = false;
+          self._loadingPromise = null;
+        });
+      return self._loadingPromise;
+    },
+    refreshActiveTasks: function () {
+      var self = this;
+      var activeTasks = self.tasks.filter(function (task) {
+        return ["pending", "running", "converting", "packaging"].indexOf(task.status) !== -1;
       });
+      if (activeTasks.length === 0) return Promise.resolve();
+      return Promise.all(activeTasks.map(function (task) {
+        return API.refreshMetrics(task.id).then(function (res) {
+          if (res && res.code === 0 && res.data) {
+            Object.assign(task, res.data);
+          }
+        }).catch(function () {
+          return null;
+        });
+      }));
+    },
+    startPolling: function () {
+      var self = this;
+      self.stopPolling();
+      self._pollTimer = setInterval(function () {
+        self.load(true);
+      }, 3000);
+    },
+    stopPolling: function () {
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
     },
     doJump: function () {
       if (this.jumpPage >= 1 && this.jumpPage <= this.totalPages) {
@@ -206,21 +260,19 @@ app.component("training-tab", {
       this.$root.showTrainingChartModal = true;
     },
     goToPackage: function (task) {
-      var self = this;
-      API.getPackages().then(function (res) {
-        var pkg = res.data.packages.find(function (p) {
-          return p.dataset_name === task.dataset_name && p.version === task.version;
-        });
-        if (pkg) {
-          self.$root.highlightPackageId = pkg.id;
-          self.$root.navigateTo("package");
-        } else {
-          alert("未找到对应产物包");
-        }
-      });
+      if (!task.package_ready || !task.package_id) {
+        alert("产物包正在生成，请稍后刷新再试");
+        return;
+      }
+      this.$root.highlightPackageId = task.package_id;
+      this.$root.navigateTo("package");
     },
   },
   mounted: function () {
     this.load();
+    this.startPolling();
+  },
+  beforeUnmount: function () {
+    this.stopPolling();
   },
 });

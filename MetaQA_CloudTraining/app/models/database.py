@@ -75,6 +75,9 @@ def init_tables():
         map50_95        REAL DEFAULT 0,
         box_loss        REAL DEFAULT 0,
         cls_loss        REAL DEFAULT 0,
+        dfl_loss        REAL DEFAULT 0,
+        package_ready   INTEGER DEFAULT 0,
+        package_id      TEXT DEFAULT '',
         run_dir         TEXT DEFAULT '',
         created_at      TEXT NOT NULL,
         started_at      TEXT DEFAULT '',
@@ -107,7 +110,23 @@ def init_tables():
         updated_at      TEXT NOT NULL
     );
     """)
+    _ensure_column(conn, "training_tasks", "dfl_loss", "REAL DEFAULT 0")
+    _ensure_column(conn, "training_tasks", "package_ready", "INTEGER DEFAULT 0")
+    _ensure_column(conn, "training_tasks", "package_id", "TEXT DEFAULT ''")
+    conn.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_packages_task_id_unique
+    ON packages(task_id)
+    WHERE task_id != ''
+    """)
     conn.commit()
+
+
+def _ensure_column(conn, table_name: str, column_name: str, ddl: str):
+    cols = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    names = {row[1] for row in cols}
+    if column_name in names:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}")
 
 
 def now_iso() -> str:

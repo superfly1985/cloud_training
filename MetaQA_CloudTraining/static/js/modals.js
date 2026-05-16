@@ -34,6 +34,83 @@ app.component("confirm-modal", {
   },
 });
 
+function blurActiveElement() {
+  if (document.activeElement && typeof document.activeElement.blur === "function") {
+    document.activeElement.blur();
+  }
+}
+
+function resetUploadMetrics(vm) {
+  vm.uploadPercent = 0;
+  vm.uploadedBytes = 0;
+  vm.uploadSpeed = 0;
+  vm.uploadError = "";
+  vm.etaText = "计算中…";
+  vm._cancelUpload = false;
+  vm._speedSamples = [];
+  vm._lastTick = 0;
+  vm._lastBytes = 0;
+}
+
+function formatEtaText(seconds) {
+  if (!seconds || seconds <= 0) return "即将完成";
+  if (seconds < 60) return seconds + " 秒";
+  if (seconds < 3600) return Math.floor(seconds / 60) + " 分 " + (seconds % 60) + " 秒";
+  return Math.floor(seconds / 3600) + " 时 " + Math.floor((seconds % 3600) / 60) + " 分";
+}
+
+function updateUploadMetrics(vm, absoluteBytes, totalBytes) {
+  var now = Date.now();
+  vm.uploadedBytes = Math.min(totalBytes, Math.max(0, absoluteBytes));
+  vm.uploadPercent = Math.min(100, Math.round((vm.uploadedBytes / totalBytes) * 100));
+
+  if (!vm._lastTick) {
+    vm._lastTick = now;
+    vm._lastBytes = vm.uploadedBytes;
+    return;
+  }
+
+  var elapsed = (now - vm._lastTick) / 1000;
+  var bytesDelta = vm.uploadedBytes - vm._lastBytes;
+  if (elapsed <= 0 || bytesDelta < 0) return;
+
+  if (bytesDelta > 0) {
+    var instantSpeed = bytesDelta / elapsed;
+    vm._speedSamples.push(instantSpeed);
+    if (vm._speedSamples.length > 12) vm._speedSamples.shift();
+
+    var weighted = 0;
+    var weightTotal = 0;
+    for (var i = 0; i < vm._speedSamples.length; i++) {
+      var weight = i + 1;
+      weighted += vm._speedSamples[i] * weight;
+      weightTotal += weight;
+    }
+    vm.uploadSpeed = weightTotal ? (weighted / weightTotal) : instantSpeed;
+    vm._lastTick = now;
+    vm._lastBytes = vm.uploadedBytes;
+  }
+
+  var remaining = totalBytes - vm.uploadedBytes;
+  var etaSec = vm.uploadSpeed > 0 ? Math.ceil(remaining / vm.uploadSpeed) : 0;
+  vm.etaText = formatEtaText(etaSec);
+}
+
+function isUploadCancelled(vm, err) {
+  return !!(vm && vm._cancelUpload) || !!(err && /取消/.test(err.message || ""));
+}
+
+function stopUploadSession(vm, cancelled) {
+  vm.uploading = false;
+  vm.submitting = false;
+  vm._sessionId = "";
+  vm._activeUploadRequest = null;
+  if (cancelled) {
+    vm.uploadError = "";
+    vm.etaText = "已取消";
+  }
+}
+
 app.component("create-dataset-modal", {
   template: `
     <div class="modal-overlay" :class="{ nobgclose: uploading }" @click.self="canClose ? $emit('close') : null" role="dialog" aria-modal="true" aria-label="创建数据集">
@@ -68,7 +145,7 @@ app.component("create-dataset-modal", {
 
           <div v-if="uploading" class="upload-progress-panel">
             <div style="font-size: 14px; font-weight: 500; margin-bottom: 12px;">
-              <span class="spinner"></span> 正在上传 {{ fileName }}
+              <span class="spin-icon" style="margin-right: 6px;"><i class="bi bi-arrow-repeat"></i></span> 正在上传 {{ fileName }}
             </div>
             <div class="progress-bar upload-progress-bar">
               <div class="progress-fill" :style="{ width: uploadPercent + '%' }"></div>
@@ -88,7 +165,7 @@ app.component("create-dataset-modal", {
           <button v-if="!uploading" class="btn btn-ghost" @click="$emit('close')">取消</button>
           <button v-if="uploading" class="btn btn-ghost btn-danger" @click="cancelUpload">取消上传</button>
           <button class="btn btn-primary" @click="submit" :disabled="submitting || uploading">
-            <span v-if="submitting" class="spinner"></span>
+            <span v-if="submitting" class="spin-icon" style="margin-right: 6px;"><i class="bi bi-arrow-repeat"></i></span>
             {{ uploading ? '上传中…' : submitting ? '创建中…' : '创建' }}
           </button>
         </div>
@@ -113,6 +190,7 @@ app.component("create-dataset-modal", {
       _speedSamples: [],
       _lastTick: 0,
       _lastBytes: 0,
+      _activeUploadRequest: null,
     };
   },
   computed: {
@@ -156,6 +234,11 @@ app.component("create-dataset-modal", {
     },
     cancelUpload: function () {
       this._cancelUpload = true;
+      this.uploadError = "";
+      this.etaText = "正在取消…";
+      if (this._activeUploadRequest && typeof this._activeUploadRequest.abort === "function") {
+        this._activeUploadRequest.abort();
+      }
     },
     _doChunkedUpload: function (dsName, file, targetDsId) {
       var self = this;
@@ -163,39 +246,41 @@ app.component("create-dataset-modal", {
       var totalSize = file.size;
       var totalChunks = Math.ceil(totalSize / chunkSize);
 
+      blurActiveElement();
       self.uploading = true;
-      self.uploadPercent = 0;
-      self.uploadedBytes = 0;
-      self.uploadSpeed = 0;
-      self.uploadError = "";
-      self.etaText = "计算中…";
-      self._cancelUpload = false;
-      self._speedSamples = [];
-      self._lastTick = 0;
-      self._lastBytes = 0;
+      resetUploadMetrics(self);
 
       API.uploadInit(file.name, totalSize, chunkSize).then(function (res) {
-        if (res.code !== 0 || self._cancelUpload) {
-          self.uploading = false;
-          self.submitting = false;
+        if (self._cancelUpload) {
+          stopUploadSession(self, true);
+          return;
+        }
+        if (res.code !== 0) {
+          stopUploadSession(self, false);
           self.uploadError = res.message || "初始化上传失败";
           return;
         }
         var sessionId = res.data.session_id;
+        self._sessionId = sessionId;
+        self.uploadPercent = 1; // 初始进度设为 1% 以显示活动状态
+        self.uploadedBytes = 0;
+        self.etaText = "准备中…";
         self._lastTick = Date.now();
         self._lastBytes = 0;
         self._uploadChunks(sessionId, file, 0, totalChunks, chunkSize, targetDsId);
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "网络错误: " + (err.message || "初始化失败");
       });
     },
     _uploadChunks: function (sessionId, file, idx, total, chunkSize, targetDsId) {
       var self = this;
       if (self._cancelUpload) {
-        self.uploading = false;
-        self.submitting = false;
+        stopUploadSession(self, true);
         return;
       }
 
@@ -208,57 +293,55 @@ app.component("create-dataset-modal", {
       var end = Math.min(start + chunkSize, file.size);
       var blob = file.slice(start, end);
 
-      API.uploadChunk(sessionId, idx, blob).then(function (res) {
+      var request = API.uploadChunk(sessionId, idx, blob, function (loaded) {
+        updateUploadMetrics(self, start + loaded, file.size);
+      });
+      self._activeUploadRequest = request;
+      request.then(function (res) {
+        if (self._cancelUpload) {
+          stopUploadSession(self, true);
+          return;
+        }
         if (res.code !== 0) {
-          self.uploading = false;
-          self.submitting = false;
+          stopUploadSession(self, false);
           self.uploadError = res.message || "上传分片失败";
           return;
         }
-
-        var now = Date.now();
-        self.uploadedBytes = Math.min(end, file.size);
-        self.uploadPercent = Math.min(100, Math.round((self.uploadedBytes / file.size) * 100));
-
-        var elapsed = (now - self._lastTick) / 1000;
-        var bytesDelta = self.uploadedBytes - self._lastBytes;
-        if (elapsed > 0 && bytesDelta > 0) {
-          var instantSpeed = bytesDelta / elapsed;
-          self._speedSamples.push(instantSpeed);
-          if (self._speedSamples.length > 8) self._speedSamples.shift();
-          var sum = 0;
-          for (var i = 0; i < self._speedSamples.length; i++) sum += self._speedSamples[i];
-          self.uploadSpeed = sum / self._speedSamples.length;
-          self._lastTick = now;
-          self._lastBytes = self.uploadedBytes;
-
-          var remaining = file.size - self.uploadedBytes;
-          var etaSec = self.uploadSpeed > 0 ? Math.ceil(remaining / self.uploadSpeed) : 0;
-          if (etaSec < 60) self.etaText = etaSec + " 秒";
-          else if (etaSec < 3600) self.etaText = Math.floor(etaSec / 60) + " 分 " + (etaSec % 60) + " 秒";
-          else self.etaText = Math.floor(etaSec / 3600) + " 时 " + Math.floor((etaSec % 3600) / 60) + " 分";
-        }
-
+        updateUploadMetrics(self, end, file.size);
         self._uploadChunks(sessionId, file, idx + 1, total, chunkSize, targetDsId);
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "网络错误: " + (err.message || "上传中断");
+      }).finally(function () {
+        if (self._activeUploadRequest === request) {
+          self._activeUploadRequest = null;
+        }
       });
     },
     _finishUpload: function (sessionId, targetDsId) {
       var self = this;
-      API.uploadComplete(sessionId, targetDsId, targetDsId ? "merge" : "create").then(function (res) {
-        self.uploading = false;
-        self.submitting = false;
+      if (self._cancelUpload) {
+        stopUploadSession(self, true);
+        return;
+      }
+      var extra = targetDsId ? {} : { name: self.name };
+      API.uploadComplete(sessionId, targetDsId, targetDsId ? "merge" : "create", extra).then(function (res) {
+        stopUploadSession(self, false);
         if (res.code !== 0) {
           self.uploadError = res.message || "导入失败";
           return;
         }
         self.$emit("close");
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "导入失败: " + (err.message || "请重试");
       });
     },
@@ -271,6 +354,9 @@ app.component("create-dataset-modal", {
     document.addEventListener("keydown", this._keyHandler);
   },
   beforeUnmount: function () {
+    if (this._activeUploadRequest && typeof this._activeUploadRequest.abort === "function") {
+      this._activeUploadRequest.abort();
+    }
     document.removeEventListener("keydown", this._keyHandler);
   },
 });
@@ -304,7 +390,7 @@ app.component("merge-dataset-modal", {
 
           <div v-if="uploading" class="upload-progress-panel">
             <div style="font-size: 14px; font-weight: 500; margin-bottom: 12px;">
-              <span class="spinner"></span> 正在上传 {{ fileName }}
+              <span class="spin-icon" style="margin-right: 6px;"><i class="bi bi-arrow-repeat"></i></span> 正在上传 {{ fileName }}
             </div>
             <div class="progress-bar upload-progress-bar">
               <div class="progress-fill" :style="{ width: uploadPercent + '%' }"></div>
@@ -324,7 +410,7 @@ app.component("merge-dataset-modal", {
           <button v-if="!uploading" class="btn btn-ghost" @click="$emit('close')">取消</button>
           <button v-if="uploading" class="btn btn-ghost btn-danger" @click="cancelUpload">取消上传</button>
           <button class="btn btn-primary" @click="submit" :disabled="!targetId || !file || submitting || uploading">
-            <span v-if="submitting" class="spinner"></span>
+            <span v-if="submitting" class="spin-icon" style="margin-right: 6px;"><i class="bi bi-arrow-repeat"></i></span>
             {{ uploading ? '上传中…' : submitting ? '合并中…' : '合并' }}
           </button>
         </div>
@@ -349,6 +435,7 @@ app.component("merge-dataset-modal", {
       _speedSamples: [],
       _lastTick: 0,
       _lastBytes: 0,
+      _activeUploadRequest: null,
     };
   },
   computed: {
@@ -381,6 +468,11 @@ app.component("merge-dataset-modal", {
     },
     cancelUpload: function () {
       this._cancelUpload = true;
+      this.uploadError = "";
+      this.etaText = "正在取消…";
+      if (this._activeUploadRequest && typeof this._activeUploadRequest.abort === "function") {
+        this._activeUploadRequest.abort();
+      }
     },
     _doChunkedUpload: function (file, targetDsId) {
       var self = this;
@@ -388,39 +480,41 @@ app.component("merge-dataset-modal", {
       var totalSize = file.size;
       var totalChunks = Math.ceil(totalSize / chunkSize);
 
+      blurActiveElement();
       self.uploading = true;
-      self.uploadPercent = 0;
-      self.uploadedBytes = 0;
-      self.uploadSpeed = 0;
-      self.uploadError = "";
-      self.etaText = "计算中…";
-      self._cancelUpload = false;
-      self._speedSamples = [];
-      self._lastTick = 0;
-      self._lastBytes = 0;
+      resetUploadMetrics(self);
 
       API.uploadInit(file.name, totalSize, chunkSize).then(function (res) {
-        if (res.code !== 0 || self._cancelUpload) {
-          self.uploading = false;
-          self.submitting = false;
+        if (self._cancelUpload) {
+          stopUploadSession(self, true);
+          return;
+        }
+        if (res.code !== 0) {
+          stopUploadSession(self, false);
           self.uploadError = res.message || "初始化上传失败";
           return;
         }
         var sessionId = res.data.session_id;
+        self._sessionId = sessionId;
+        self.uploadPercent = 1; // 初始进度设为 1% 以显示活动状态
+        self.uploadedBytes = 0;
+        self.etaText = "准备中…";
         self._lastTick = Date.now();
         self._lastBytes = 0;
         self._uploadChunks(sessionId, file, 0, totalChunks, chunkSize, targetDsId);
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "网络错误: " + (err.message || "初始化失败");
       });
     },
     _uploadChunks: function (sessionId, file, idx, total, chunkSize, targetDsId) {
       var self = this;
       if (self._cancelUpload) {
-        self.uploading = false;
-        self.submitting = false;
+        stopUploadSession(self, true);
         return;
       }
 
@@ -433,57 +527,54 @@ app.component("merge-dataset-modal", {
       var end = Math.min(start + chunkSize, file.size);
       var blob = file.slice(start, end);
 
-      API.uploadChunk(sessionId, idx, blob).then(function (res) {
+      var request = API.uploadChunk(sessionId, idx, blob, function (loaded) {
+        updateUploadMetrics(self, start + loaded, file.size);
+      });
+      self._activeUploadRequest = request;
+      request.then(function (res) {
+        if (self._cancelUpload) {
+          stopUploadSession(self, true);
+          return;
+        }
         if (res.code !== 0) {
-          self.uploading = false;
-          self.submitting = false;
+          stopUploadSession(self, false);
           self.uploadError = res.message || "上传分片失败";
           return;
         }
-
-        var now = Date.now();
-        self.uploadedBytes = Math.min(end, file.size);
-        self.uploadPercent = Math.min(100, Math.round((self.uploadedBytes / file.size) * 100));
-
-        var elapsed = (now - self._lastTick) / 1000;
-        var bytesDelta = self.uploadedBytes - self._lastBytes;
-        if (elapsed > 0 && bytesDelta > 0) {
-          var instantSpeed = bytesDelta / elapsed;
-          self._speedSamples.push(instantSpeed);
-          if (self._speedSamples.length > 8) self._speedSamples.shift();
-          var sum = 0;
-          for (var i = 0; i < self._speedSamples.length; i++) sum += self._speedSamples[i];
-          self.uploadSpeed = sum / self._speedSamples.length;
-          self._lastTick = now;
-          self._lastBytes = self.uploadedBytes;
-
-          var remaining = file.size - self.uploadedBytes;
-          var etaSec = self.uploadSpeed > 0 ? Math.ceil(remaining / self.uploadSpeed) : 0;
-          if (etaSec < 60) self.etaText = etaSec + " 秒";
-          else if (etaSec < 3600) self.etaText = Math.floor(etaSec / 60) + " 分 " + (etaSec % 60) + " 秒";
-          else self.etaText = Math.floor(etaSec / 3600) + " 时 " + Math.floor((etaSec % 3600) / 60) + " 分";
-        }
-
+        updateUploadMetrics(self, end, file.size);
         self._uploadChunks(sessionId, file, idx + 1, total, chunkSize, targetDsId);
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "网络错误: " + (err.message || "上传中断");
+      }).finally(function () {
+        if (self._activeUploadRequest === request) {
+          self._activeUploadRequest = null;
+        }
       });
     },
     _finishUpload: function (sessionId, targetDsId) {
       var self = this;
+      if (self._cancelUpload) {
+        stopUploadSession(self, true);
+        return;
+      }
       API.uploadComplete(sessionId, targetDsId, "merge").then(function (res) {
-        self.uploading = false;
-        self.submitting = false;
+        stopUploadSession(self, false);
         if (res.code !== 0) {
           self.uploadError = res.message || "合并失败";
           return;
         }
         self.$emit("close");
       }).catch(function (err) {
-        self.uploading = false;
-        self.submitting = false;
+        if (isUploadCancelled(self, err)) {
+          stopUploadSession(self, true);
+          return;
+        }
+        stopUploadSession(self, false);
         self.uploadError = "合并失败: " + (err.message || "请重试");
       });
     },
@@ -499,6 +590,9 @@ app.component("merge-dataset-modal", {
     document.addEventListener("keydown", this._keyHandler);
   },
   beforeUnmount: function () {
+    if (this._activeUploadRequest && typeof this._activeUploadRequest.abort === "function") {
+      this._activeUploadRequest.abort();
+    }
     document.removeEventListener("keydown", this._keyHandler);
   },
 });
@@ -584,7 +678,7 @@ app.component("new-training-modal", {
         <div class="modal-footer">
           <button class="btn btn-ghost" @click="$emit('close')">取消</button>
           <button class="btn btn-primary" @click="submit" :disabled="submitting">
-            <span v-if="submitting" class="spinner"></span>
+            <span v-if="submitting" class="spin-icon" style="margin-right: 6px;"><i class="bi bi-arrow-repeat"></i></span>
             {{ submitting ? '启动中…' : '开始训练' }}
           </button>
         </div>
@@ -623,9 +717,22 @@ app.component("new-training-modal", {
 
       var self = this;
       self.submitting = true;
-      API.createTraining(self.form).then(function () {
+      API.createTraining(self.form).then(function (res) {
+        if (!res || res.code !== 0) {
+          self.submitting = false;
+          alert((res && res.message) || "启动训练失败");
+          return;
+        }
+        if (res.data && res.data.status === "failed") {
+          self.submitting = false;
+          alert("训练启动失败，请查看日志或稍后重试");
+          return;
+        }
         self.submitting = false;
         self.$emit("close");
+      }).catch(function (err) {
+        self.submitting = false;
+        alert("启动训练失败: " + (err.message || "请稍后重试"));
       });
     },
   },
@@ -673,21 +780,42 @@ app.component("training-log-modal", {
     return {
       logLines: [],
       loading: true,
+      _pollTimer: null,
     };
   },
   methods: {
     loadLog: function () {
       var self = this;
-      self.loading = true;
+      var container = self.$refs.logContainer;
+      var stickToBottom = true;
+      if (container) {
+        var distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+        stickToBottom = distance < 24;
+      }
+      if (self.logLines.length === 0) self.loading = true;
       API.getTrainingLog(self.taskId).then(function (res) {
-        self.logLines = res.data.log.split("\n");
+        var logText = (res.data && res.data.log) || "";
+        self.logLines = logText ? logText.split("\n") : ["暂无日志输出"];
         self.loading = false;
         self.$nextTick(function () {
-          if (self.$refs.logContainer) {
+          if (stickToBottom && self.$refs.logContainer) {
             self.$refs.logContainer.scrollTop = self.$refs.logContainer.scrollHeight;
           }
         });
       });
+    },
+    startPolling: function () {
+      var self = this;
+      self.stopPolling();
+      self._pollTimer = setInterval(function () {
+        self.loadLog();
+      }, 2000);
+    },
+    stopPolling: function () {
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
     },
   },
   watch: {
@@ -697,12 +825,14 @@ app.component("training-log-modal", {
   },
   mounted: function () {
     this.loadLog();
+    this.startPolling();
     this._keyHandler = function (e) {
       if (e.key === "Escape") this.$emit("close");
     }.bind(this);
     document.addEventListener("keydown", this._keyHandler);
   },
   beforeUnmount: function () {
+    this.stopPolling();
     document.removeEventListener("keydown", this._keyHandler);
   },
 });
@@ -734,12 +864,13 @@ app.component("training-chart-modal", {
     return {
       loading: true,
       chartInstance: null,
+      _pollTimer: null,
     };
   },
   methods: {
     loadChart: function () {
       var self = this;
-      self.loading = true;
+      if (!self.$refs.chartCanvas) self.loading = true;
       API.getLossCurve(self.taskId).then(function (res) {
         self.loading = false;
         self.$nextTick(function () {
@@ -761,7 +892,14 @@ app.component("training-chart-modal", {
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, w, h);
 
-      var allVals = data.box_loss.concat(data.cls_loss, data.map50);
+      var allVals = data.box_loss.concat(data.cls_loss, data.dfl_loss || []);
+      if (!data.epochs || data.epochs.length === 0 || allVals.length === 0) {
+        ctx.fillStyle = "#9ca3af";
+        ctx.font = "14px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillText("暂无曲线数据，训练开始后会自动刷新", w / 2, h / 2);
+        return;
+      }
       var minV = Math.min.apply(null, allVals);
       var maxV = Math.max.apply(null, allVals);
       var range = maxV - minV || 1;
@@ -795,7 +933,7 @@ app.component("training-chart-modal", {
       var series = [
         { data: data.box_loss, color: "#2563eb", label: "Box Loss" },
         { data: data.cls_loss, color: "#dc2626", label: "Cls Loss" },
-        { data: data.map50, color: "#16a34a", label: "mAP@50" },
+        { data: data.dfl_loss || [], color: "#16a34a", label: "DFL Loss" },
       ];
 
       series.forEach(function (s) {
@@ -823,6 +961,19 @@ app.component("training-chart-modal", {
         legendX += 100;
       });
     },
+    startPolling: function () {
+      var self = this;
+      self.stopPolling();
+      self._pollTimer = setInterval(function () {
+        self.loadChart();
+      }, 3000);
+    },
+    stopPolling: function () {
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer);
+        this._pollTimer = null;
+      }
+    },
   },
   watch: {
     taskId: function () {
@@ -831,12 +982,14 @@ app.component("training-chart-modal", {
   },
   mounted: function () {
     this.loadChart();
+    this.startPolling();
     this._keyHandler = function (e) {
       if (e.key === "Escape") this.$emit("close");
     }.bind(this);
     document.addEventListener("keydown", this._keyHandler);
   },
   beforeUnmount: function () {
+    this.stopPolling();
     document.removeEventListener("keydown", this._keyHandler);
   },
 });
@@ -860,6 +1013,9 @@ app.component("package-detail-modal", {
             <div style="margin-bottom: 16px;">
               <div style="font-size: 16px; font-weight: 600;">{{ pkg.name }}</div>
               <div style="font-size: 13px; color: var(--color-text-secondary);">{{ pkg.dataset_name }} · {{ pkg.version }}</div>
+              <div style="margin-top: 8px;">
+                <span class="badge" :class="conversionBadgeClass(pkg.conversion_status)">{{ conversionStatusText(pkg.conversion_status) }}</span>
+              </div>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
               <div>
@@ -899,6 +1055,14 @@ app.component("package-detail-modal", {
   methods: {
     formatSize: function (bytes) {
       return API.formatBytes(bytes);
+    },
+    conversionStatusText: function (status) {
+      var map = { complete: "已转换", partial: "部分转换", not_converted: "未转换" };
+      return map[status] || "未转换";
+    },
+    conversionBadgeClass: function (status) {
+      var map = { complete: "badge-success", partial: "badge-warning", not_converted: "badge-secondary" };
+      return map[status] || "badge-secondary";
     },
     loadDetail: function () {
       var self = this;

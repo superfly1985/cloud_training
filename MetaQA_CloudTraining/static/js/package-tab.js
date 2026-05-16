@@ -31,7 +31,8 @@ app.component("package-tab", {
                 <th>名称</th>
                 <th>数据集</th>
                 <th>版本</th>
-                <th>mAP@50</th>
+                <th>转换状态</th>
+                <th>损失值</th>
                 <th>大小</th>
                 <th>训练时长</th>
                 <th>创建时间</th>
@@ -43,7 +44,14 @@ app.component("package-tab", {
                 <td class="text-truncate" style="max-width: 180px;">{{ pkg.name }}</td>
                 <td class="text-truncate" style="max-width: 120px;">{{ pkg.dataset_name }}</td>
                 <td><span class="badge badge-secondary">{{ pkg.version }}</span></td>
-                <td class="numeric">{{ pkg.map_val.toFixed(4) }}</td>
+                <td><span class="badge" :class="conversionBadgeClass(pkg.conversion_status)">{{ conversionStatusText(pkg.conversion_status) }}</span></td>
+                <td class="numeric">
+                  <div class="loss-stack">
+                    <div>box: {{ formatLoss(pkg.box_loss) }}</div>
+                    <div>cls: {{ formatLoss(pkg.cls_loss) }}</div>
+                    <div>dfl: {{ formatLoss(pkg.dfl_loss) }}</div>
+                  </div>
+                </td>
                 <td class="numeric">{{ formatSize(pkg.size) }}</td>
                 <td>{{ pkg.training_time }}</td>
                 <td>{{ formatDate(pkg.created_at) }}</td>
@@ -127,6 +135,19 @@ app.component("package-tab", {
     },
     formatDate: function (iso) {
       return API.formatDate(iso);
+    },
+    formatLoss: function (value) {
+      if (value === null || value === undefined || value === "") return "-";
+      var num = Number(value);
+      return Number.isFinite(num) && num > 0 ? num.toFixed(3) : "-";
+    },
+    conversionStatusText: function (status) {
+      var map = { complete: "已转换", partial: "部分转换", not_converted: "未转换" };
+      return map[status] || "未转换";
+    },
+    conversionBadgeClass: function (status) {
+      var map = { complete: "badge-success", partial: "badge-warning", not_converted: "badge-secondary" };
+      return map[status] || "badge-secondary";
     },
     load: function () {
       var self = this;

@@ -1,0 +1,23 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
+torchvision==0.21.0+cu124
+torchaudio==2.6.0+cu124
+pyyaml
+numpy==1.26.4
+opencv-python==4.7.0.72
+Pillow==10.4.0
+ultralytics==8.3.148
+tensorflow>=2.19,<2.20
+tf-keras>=2.19,<2.20
+onnx2tf>=1.28.8,<1.29
+ai-edge-litert
+sng4onnx
+onnx_graphsurgeon
+onnx==1.20.1
+onnxsim==0.4.36
+onnxslim
+onnxscript==0.1.0.dev20240723
+onnx-ir==0.1.9
+protobuf>=5,<6
+h5py
+flatbuffers

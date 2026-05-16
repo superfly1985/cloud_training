@@ -53,6 +53,7 @@ var app = Vue.createApp({
       appVersion: "0.1.0",
       confirmConfig: {},
       confirmResolve: null,
+      _systemTimer: null,
     };
   },
   methods: {
@@ -90,17 +91,10 @@ var app = Vue.createApp({
           statusText: d.statusText,
           gpuUsage: d.gpu_usage,
           diskUsage: d.disk_usage,
-          runningTasks: d.running_tasks,
+          runningTasks: d.running_tasks || 0,
         };
+        self.envHasFailures = d.status === "failed" || d.status === "partial";
       });
-      if (!self.envFixing) {
-        API.getSystemChecks().then(function (res) {
-          if (res && res.data && res.data.checks) {
-            var hasFail = res.data.checks.some(function (c) { return c.status === "fail"; });
-            self.envHasFailures = hasFail;
-          }
-        });
-      }
     },
     confirm: function (config) {
       var self = this;
@@ -123,11 +117,15 @@ var app = Vue.createApp({
     window.addEventListener("hashchange", this.handleHashChange);
     this.loadSystemStatus();
     var self = this;
-    setInterval(function () {
+    this._systemTimer = setInterval(function () {
       self.loadSystemStatus();
-    }, 30000);
+    }, 10000);
   },
   beforeUnmount: function () {
+    if (this._systemTimer) {
+      clearInterval(this._systemTimer);
+      this._systemTimer = null;
+    }
     window.removeEventListener("hashchange", this.handleHashChange);
   },
 });

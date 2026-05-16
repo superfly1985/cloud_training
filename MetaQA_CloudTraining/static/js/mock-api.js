@@ -33,7 +33,7 @@ var MockAPI = (function () {
   ];
 
   var modelSizes = ["n", "s", "m", "l"];
-  var statusPool = ["running", "completed", "stopped", "failed"];
+  var statusPool = ["running", "converting", "packaging", "completed", "stopped", "failed"];
 
   var datasets = [];
   for (var i = 0; i < 50; i++) {
@@ -59,9 +59,10 @@ var MockAPI = (function () {
     var dsIdx = i % 50;
     var ds = datasets[dsIdx];
     var verNum = Math.floor(i / 50) + 1;
-    var status = statusPool[i % 4];
+    var status = statusPool[i % statusPool.length];
     var epochs = [50, 80, 100, 150, 200][i % 5];
-    var current = status === "completed" ? epochs : status === "running" ? Math.floor(Math.random() * epochs * 0.8) + 1 : status === "failed" ? Math.floor(Math.random() * epochs * 0.3) + 1 : Math.floor(Math.random() * epochs * 0.6) + 1;
+    var isReady = status === "completed";
+    var current = isReady ? epochs : status === "running" ? Math.floor(Math.random() * epochs * 0.8) + 1 : status === "failed" ? Math.floor(Math.random() * epochs * 0.3) + 1 : epochs;
     var baseMap = 0.6 + Math.random() * 0.35;
     var dayOffset = Math.floor(i * 0.5);
     var created = new Date(2026, 4, 13 - dayOffset, 8 + (i % 14), i % 60, 0);
@@ -82,28 +83,35 @@ var MockAPI = (function () {
       map50_95: current > 0 ? +(baseMap * (current / epochs) * 0.75).toFixed(4) : 0,
       box_loss: current > 0 ? +(0.5 - (current / epochs) * 0.3 + Math.random() * 0.05).toFixed(3) : 0,
       cls_loss: current > 0 ? +(0.4 - (current / epochs) * 0.25 + Math.random() * 0.03).toFixed(3) : 0,
+      dfl_loss: current > 0 ? +(0.35 - (current / epochs) * 0.18 + Math.random() * 0.02).toFixed(3) : 0,
+      package_ready: isReady,
+      package_id: isReady ? "pkg-" + String(i + 1).padStart(3, "0") : "",
       created_at: created.toISOString(),
       started_at: new Date(created.getTime() + 60000).toISOString(),
-      completed_at: status === "completed" ? new Date(created.getTime() + 7200000 + Math.random() * 3600000).toISOString() : undefined,
+      completed_at: isReady ? new Date(created.getTime() + 7200000 + Math.random() * 3600000).toISOString() : undefined,
     });
   }
 
   var packages = [];
   for (var i = 0; i < 50; i++) {
     var task = trainingTasks[i];
+    if (!task.package_ready) continue;
     var pkgSize = Math.floor(10000000 + Math.random() * 15000000);
-    var mapVal = task.status === "completed" ? task.map50 : 0.5 + Math.random() * 0.45;
+    var mapVal = task.map50;
     var hours = Math.floor(Math.random() * 4) + 1;
     var mins = Math.floor(Math.random() * 59);
     var dayOffset = Math.floor(i * 0.4);
     var created = new Date(2026, 4, 13 - dayOffset, 10 + (i % 12), i % 60, 0);
     packages.push({
-      id: "pkg-" + String(i + 1).padStart(3, "0"),
+      id: task.package_id,
       name: task.dataset_name + "_" + task.version + ".zip",
       dataset_name: task.dataset_name,
       version: task.version,
       size: pkgSize,
       map: +mapVal.toFixed(4),
+      box_loss: task.box_loss,
+      cls_loss: task.cls_loss,
+      dfl_loss: task.dfl_loss,
       training_time: hours + "h " + (mins < 10 ? "0" : "") + mins + "m",
       created_at: created.toISOString(),
       files: [
@@ -269,6 +277,9 @@ var MockAPI = (function () {
           map50_95: 0,
           box_loss: 0,
           cls_loss: 0,
+          dfl_loss: 0,
+          package_ready: false,
+          package_id: "",
           created_at: new Date().toISOString(),
           started_at: new Date().toISOString(),
         };
@@ -302,8 +313,8 @@ var MockAPI = (function () {
               (0.23 + Math.random() * 0.05).toFixed(3) +
               "  cls_loss: " +
               (0.15 + Math.random() * 0.03).toFixed(3) +
-              "  mAP@50: " +
-              (0.90 + Math.random() * 0.04).toFixed(4)
+              "  dfl_loss: " +
+              (0.12 + Math.random() * 0.02).toFixed(3)
           );
         }
         return { code: 0, message: "ok", data: { log: lines.join("\n") } };
@@ -315,14 +326,14 @@ var MockAPI = (function () {
         var epochs = [];
         var boxLoss = [];
         var clsLoss = [];
-        var map50 = [];
+        var dflLoss = [];
         for (var i = 1; i <= 45; i++) {
           epochs.push(i);
           boxLoss.push(+(0.5 - i * 0.006 + Math.random() * 0.02).toFixed(3));
           clsLoss.push(+(0.4 - i * 0.005 + Math.random() * 0.015).toFixed(3));
-          map50.push(+(0.6 + i * 0.007 + Math.random() * 0.01).toFixed(4));
+          dflLoss.push(+(0.32 - i * 0.003 + Math.random() * 0.01).toFixed(3));
         }
-        return { code: 0, message: "ok", data: { epochs: epochs, box_loss: boxLoss, cls_loss: clsLoss, map50: map50 } };
+        return { code: 0, message: "ok", data: { epochs: epochs, box_loss: boxLoss, cls_loss: clsLoss, dfl_loss: dflLoss } };
       });
     },
 
@@ -383,8 +394,74 @@ var MockAPI = (function () {
 
     fixSystem: function () {
       return delay(1500).then(function () {
-        return { code: 0, message: "ok", data: { status: "ready", checks: systemChecks } };
+        return {
+          code: 0,
+          message: "ok",
+          data: {
+            task_id: "fix-001",
+            status: "success",
+            statusText: "系统正常",
+            current_step: "清理缓存",
+            current_step_index: 9,
+            total_steps: 9,
+            percent: 100,
+            elapsed_seconds: 8,
+            steps: [
+              { name: "检查固定路径", status: "success" },
+              { name: "检查训练环境", status: "success" },
+              { name: "检查转换环境", status: "success" },
+              { name: "创建缺失环境", status: "success" },
+              { name: "安装训练依赖", status: "success" },
+              { name: "安装转换依赖", status: "success" },
+              { name: "验证训练环境", status: "success" },
+              { name: "验证转换环境", status: "success" },
+              { name: "清理缓存", status: "success" }
+            ],
+            logs: ["[14:00:03] 开始自动修复", "[14:00:11] 自动修复完成"],
+          }
+        };
       });
+    },
+
+    getSystemFixCurrent: function () {
+      return delay(80).then(function () {
+        return { code: 0, message: "ok", data: null };
+      });
+    },
+
+    getSystemFixStatus: function () {
+      return delay(80).then(function () {
+        return {
+          code: 0,
+          message: "ok",
+          data: {
+            task_id: "fix-001",
+            status: "success",
+            statusText: "系统正常",
+            current_step: "清理缓存",
+            current_step_index: 9,
+            total_steps: 9,
+            percent: 100,
+            elapsed_seconds: 8,
+            steps: [
+              { name: "检查固定路径", status: "success" },
+              { name: "检查训练环境", status: "success" },
+              { name: "检查转换环境", status: "success" },
+              { name: "创建缺失环境", status: "success" },
+              { name: "安装训练依赖", status: "success" },
+              { name: "安装转换依赖", status: "success" },
+              { name: "验证训练环境", status: "success" },
+              { name: "验证转换环境", status: "success" },
+              { name: "清理缓存", status: "success" }
+            ],
+            logs: ["[14:00:03] 开始自动修复", "[14:00:11] 自动修复完成"],
+          }
+        };
+      });
+    },
+
+    downloadSystemFixLogUrl: function () {
+      return "#";
     },
   };
 })();

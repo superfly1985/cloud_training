@@ -3,7 +3,7 @@ import os
 from fastapi import APIRouter, UploadFile, File
 
 from app.core.upload_manager import init_upload, upload_chunk, complete_upload, get_upload_status
-from app.core.dataset_manager import import_zip, merge_dataset
+from app.core.dataset_manager import create_dataset, import_zip, merge_dataset
 
 router = APIRouter()
 
@@ -54,6 +54,26 @@ async def api_upload_complete(body: dict):
             if os.path.exists(file_path):
                 os.remove(file_path)
             return {"code": 0, "message": "ok", "data": result}
+
+        if action == "create":
+            ds_name = str(body.get("name", "")).strip()
+            if not ds_name:
+                raise ValueError("创建数据集时缺少名称")
+
+            split_ratio = float(body.get("split_ratio", 0.8))
+            dataset = create_dataset(ds_name, split_ratio)
+            result = import_zip(dataset["id"], file_path)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return {
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "dataset_id": dataset["id"],
+                    "dataset_name": dataset["name"],
+                    "imported": result["imported"],
+                },
+            }
 
         return {"code": 0, "message": "ok", "data": {"file_path": file_path}}
     except ValueError as e:

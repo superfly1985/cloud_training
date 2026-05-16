@@ -137,8 +137,24 @@ var API = (function () {
       return request("GET", "/system/checks");
     },
 
+    startSystemChecks: function () {
+      return request("POST", "/system/checks");
+    },
+
     fixSystem: function () {
       return request("POST", "/system/fix");
+    },
+
+    getSystemFixCurrent: function () {
+      return request("GET", "/system/fix/current");
+    },
+
+    getSystemFixStatus: function (taskId) {
+      return request("GET", "/system/fix/" + encodeURIComponent(taskId));
+    },
+
+    downloadSystemFixLogUrl: function (taskId) {
+      return BASE + "/system/fix/" + encodeURIComponent(taskId) + "/log";
     },
 
     uploadInit: function (filename, totalSize, chunkSize) {
@@ -149,21 +165,56 @@ var API = (function () {
       });
     },
 
-    uploadChunk: function (sessionId, chunkIndex, chunkData) {
+    uploadChunk: function (sessionId, chunkIndex, chunkData, onProgress) {
       var fd = new FormData();
       fd.append("file", chunkData);
-      return fetch(BASE + "/upload/chunk?session_id=" + sessionId + "&chunk_index=" + chunkIndex, {
-        method: "POST",
-        body: fd,
-      }).then(function (res) { return res.json(); });
+      var xhr = new XMLHttpRequest();
+      var request = new Promise(function (resolve, reject) {
+        xhr.open("POST", BASE + "/upload/chunk?session_id=" + sessionId + "&chunk_index=" + chunkIndex, true);
+        if (typeof onProgress === "function" && xhr.upload) {
+          xhr.upload.onprogress = function (evt) {
+            if (evt.lengthComputable) onProgress(evt.loaded, evt.total);
+          };
+        }
+        xhr.onload = function () {
+          var text = xhr.responseText || "";
+          var json;
+          try {
+            json = text ? JSON.parse(text) : {};
+          } catch (err) {
+            reject(new Error("上传响应解析失败"));
+            return;
+          }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(json);
+            return;
+          }
+          reject(new Error((json && (json.message || json.detail)) || ("请求失败 HTTP " + xhr.status)));
+        };
+        xhr.onerror = function () {
+          reject(new Error("网络错误"));
+        };
+        xhr.onabort = function () {
+          reject(new Error("上传已取消"));
+        };
+        xhr.send(fd);
+      });
+      request.abort = function () {
+        xhr.abort();
+      };
+      return request;
     },
 
-    uploadComplete: function (sessionId, datasetId, action) {
-      return request("POST", "/upload/complete", {
+    uploadComplete: function (sessionId, datasetId, action, extra) {
+      var body = {
         session_id: sessionId,
         dataset_id: datasetId,
         action: action || "create",
-      });
+      };
+      if (extra) {
+        Object.assign(body, extra);
+      }
+      return request("POST", "/upload/complete", body);
     },
   };
 })();
